@@ -26,6 +26,9 @@ jobs:
       - name: Generate schema module
         run: npm run gen:schema
 
+      - name: Generate route types
+        run: npx next typegen
+
       - name: Typecheck
         run: npx tsc --noEmit
 
