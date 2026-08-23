@@ -1,26 +1,250 @@
 @import "tailwindcss";
 
+/*
+  DATABOARD — design tokens.
+
+  The look: Swiss typographic. White paper, black ink, grayscale only.
+  Hierarchy comes from size, weight, whitespace and hairline black rules,
+  never from hue. Selection states invert: black ground, white ink.
+  Monospace is reserved for hashes, Buyer # tokens and dollar figures.
+
+  Every color used anywhere in the app should come from a token below.
+  Do not introduce new hex values in components.
+
+  Token names are historical (amber/green/red/blue survive as slots for
+  live / filled / destructive / link) but every value resolves to grayscale.
+*/
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* --- surfaces, back to front --- */
+  --bt-void: #ffffff; /* page behind everything; also inverted-chip ink */
+  --bt-bg: #ffffff; /* default page background */
+  --bt-panel: #ffffff; /* cards, board rows */
+  --bt-panel-2: #f4f4f4; /* raised panel, hover, inputs */
+  --bt-panel-3: #e8e8e8; /* pressed / active, meter tracks */
+
+  /* --- rules and edges --- */
+  --bt-rule: #000000; /* hairlines between rows */
+  --bt-rule-strong: #000000; /* section dividers, input borders */
+
+  /* --- ink --- */
+  --bt-ink: #000000; /* primary text */
+  --bt-ink-dim: #3d3d3d; /* secondary text */
+  --bt-ink-faint: #6b6b6b; /* labels, timestamps, metadata */
+  --bt-ink-ghost: #9a9a9a; /* disabled, placeholder */
+
+  /* --- signal slots, all grayscale --- */
+  --bt-amber: #000000; /* the house slot: live, open, tokens, focus */
+  --bt-amber-soft: #3d3d3d;
+  --bt-amber-wash: #f0f0f0; /* light gray wash behind callouts */
+  --bt-green: #555555; /* filled supply, accepted */
+  --bt-green-wash: #f0f0f0;
+  --bt-red: #000000; /* closed, destructive, warnings */
+  --bt-red-wash: #e4e4e4; /* darker wash so warnings still read */
+  --bt-blue: #4a4a4a; /* links: dim gray, black on hover */
+  --bt-blue-wash: #f0f0f0;
+
+  /* --- type --- */
+  --font-bt-sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-bt-display: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --font-bt-mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+
+  /* --- geometry --- */
+  --bt-radius: 0px; /* none. this is a ledger, not a bubble. */
+  --bt-radius-lg: 0px;
+  --bt-gutter: 1.25rem;
+  --bt-measure: 68ch; /* comfortable reading width for body copy */
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-void: var(--bt-void);
+  --color-bg: var(--bt-bg);
+  --color-panel: var(--bt-panel);
+  --color-panel-2: var(--bt-panel-2);
+  --color-panel-3: var(--bt-panel-3);
+
+  --color-rule: var(--bt-rule);
+  --color-rule-strong: var(--bt-rule-strong);
+
+  --color-ink: var(--bt-ink);
+  --color-ink-dim: var(--bt-ink-dim);
+  --color-ink-faint: var(--bt-ink-faint);
+  --color-ink-ghost: var(--bt-ink-ghost);
+
+  --color-amber: var(--bt-amber);
+  --color-amber-soft: var(--bt-amber-soft);
+  --color-amber-wash: var(--bt-amber-wash);
+  --color-green: var(--bt-green);
+  --color-green-wash: var(--bt-green-wash);
+  --color-red: var(--bt-red);
+  --color-red-wash: var(--bt-red-wash);
+  --color-blue: var(--bt-blue);
+  --color-blue-wash: var(--bt-blue-wash);
+
+  --font-sans: var(--font-bt-sans);
+  --font-mono: var(--font-bt-mono);
+  --font-display: var(--font-bt-display);
+
+  --radius-bt: var(--bt-radius);
+  --radius-bt-lg: var(--bt-radius-lg);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ------------------------------------------------------------------ base */
+
+* {
+  border-color: var(--bt-rule);
+}
+
+html {
+  background: var(--bt-void);
+  color-scheme: light;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bt-bg);
+  color: var(--bt-ink);
+  font-family: var(--font-bt-sans);
+  font-feature-settings: "kern", "liga";
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background: var(--bt-ink);
+  color: var(--bt-void);
+}
+
+:focus-visible {
+  outline: 1px solid var(--bt-ink);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bt-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bt-ink-ghost);
+  border: 2px solid var(--bt-bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--bt-ink);
+}
+
+/* ------------------------------------------------------- shared patterns */
+
+@utility bt-label {
+  /* the small caps label above a field or a stat */
+  font-family: var(--font-bt-mono);
+  font-size: 0.625rem;
+  line-height: 1;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--bt-ink-faint);
+}
+
+@utility bt-token {
+  /* a hash-derived identifier: buyer tokens, blind indexes, session ids */
+  font-family: var(--font-bt-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  color: var(--bt-ink);
+}
+
+@utility bt-display {
+  /* headline voice: tight bold grotesque, the Swiss poster register */
+  font-family: var(--font-bt-display);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+@utility bt-panel {
+  background: var(--bt-panel);
+  border: 1px solid var(--bt-rule);
+  border-radius: var(--bt-radius);
+}
+
+@utility bt-input {
+  width: 100%;
+  background: var(--bt-bg);
+  border: 1px solid var(--bt-rule-strong);
+  border-radius: var(--bt-radius);
+  padding: 0.5rem 0.625rem;
+  color: var(--bt-ink);
+  font-size: 0.875rem;
+  line-height: 1.4;
+
+  &::placeholder {
+    color: var(--bt-ink-ghost);
+  }
+  &:focus {
+    outline: none;
+    border-color: var(--bt-ink);
+    box-shadow: inset 0 0 0 1px var(--bt-ink);
+  }
+}
+
+@utility bt-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: var(--bt-radius);
+  border: 1px solid var(--bt-rule-strong);
+  background: var(--bt-bg);
+  color: var(--bt-ink);
+  padding: 0.5rem 0.9rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+
+  &:hover:not(:disabled) {
+    background: var(--bt-ink);
+    color: var(--bt-void);
+  }
+  &:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}
+
+@utility bt-btn-primary {
+  background: var(--bt-ink);
+  border-color: var(--bt-ink);
+  color: var(--bt-void);
+  font-weight: 600;
+
+  &:hover:not(:disabled) {
+    background: var(--bt-ink-dim);
+    border-color: var(--bt-ink-dim);
+    color: var(--bt-void);
+  }
+}
+
+/* the hairline grid that makes the board feel like a ledger */
+@utility bt-hairline-grid {
+  background-image:
+    linear-gradient(var(--bt-rule) 1px, transparent 1px),
+    linear-gradient(90deg, var(--bt-rule) 1px, transparent 1px);
+  background-size: 100% 2rem, 2rem 100%;
+  opacity: 0.08;
+}
+
+/* thin diagonal hatch, for "closed" / redacted regions */
+@utility bt-hatch {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--bt-rule) 0px,
+    var(--bt-rule) 1px,
+    transparent 1px,
+    transparent 6px
+  );
 }

@@ -11,6 +11,10 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    // lib/* import each other with explicit .ts extensions so that
+    // scripts/seed.ts can be run by plain node (ESM type stripping) without a
+    // bundler or a path-alias resolver in the loop.
+    "allowImportingTsExtensions": true,
     "jsx": "react-jsx",
     "incremental": true,
     "plugins": [

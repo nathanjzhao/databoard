@@ -3,16 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start"
+    "gen:schema": "node scripts/gen-schema-module.mjs",
+    "dev": "npm run gen:schema && next dev --port 3947",
+    "build": "npm run gen:schema && next build",
+    "start": "next start",
+    "seed": "npm run gen:schema && node scripts/seed.ts",
+    "reset-db": "node scripts/reset-db.mjs"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.4",
     "next": "16.3.2",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",

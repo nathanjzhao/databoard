@@ -39,3 +39,15 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# blind tender: the sqlite database and its WAL sidecars
+/data/
+
+# blind tender: generated from db/schema.sql before dev/build/seed
+/lib/schema.generated.ts
+
+# proof-run screenshots and playwright output
+/verify/
+/test-results/
+/playwright-report/
+*.local
