@@ -275,7 +275,14 @@ test.beforeAll(async ({ browser }) => {
   context.on("response", (res) => {
     const url = res.url();
     if (isStaticAsset(url) || !url.includes("/api/")) return;
-    apiResponses.push({ url, text: res.text().catch(() => "") });
+    // A response whose body the browser dropped (a full navigation cut it
+    // off) never delivered anything, so it counts as empty. The body promise
+    // can hang forever in that case, so bound the wait rather than the suite.
+    const text = Promise.race([
+      res.text().catch(() => ""),
+      new Promise<string>((resolve) => setTimeout(() => resolve(""), 10_000)),
+    ]);
+    apiResponses.push({ url, text });
   });
   page = await context.newPage();
 });
