@@ -19,6 +19,7 @@ import { OwnerControls } from "@/components/ask/owner-controls";
 import { getSessionUser } from "@/lib/auth";
 import { getDb, isDbConfigured } from "@/lib/db";
 import { categoryLabel, unpackTags, type AskStatus } from "@/lib/taxonomy";
+import { buyerChip } from "@/lib/voprf";
 
 export const metadata: Metadata = { title: "Ask" };
 export const dynamic = "force-dynamic";
@@ -232,7 +233,7 @@ export default async function AskDetailPage({
             <div className="px-5 py-4">
               <div className="flex items-baseline gap-2.5">
                 <span className="font-mono text-[1.75rem] leading-none text-amber">
-                  #{ask.buyer_token.slice(0, 4)}
+                  #{buyerChip(ask.buyer_token)}
                 </span>
                 {ask.buyer_is_other === 1 ? (
                   <span className="font-mono text-[0.5625rem] uppercase tracking-[0.1em] text-ink-faint">

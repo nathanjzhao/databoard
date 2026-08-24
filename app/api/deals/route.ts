@@ -1,21 +1,23 @@
 /**
  * POST /api/deals
  *
- * Body:  { buyer, askId?, totalUsd, myShareUsd, note?, participants: [{ username, shareUsd }] }
+ * Body:  { buyerTokenV2, buyerIsOther, askId?, totalUsd, myShareUsd, note?,
+ *          participants: [{ username, shareUsd }] }
  * Reply: { id, threadId }
  *
- * The second of the two routes where a buyer name crosses the wire (the
- * first is POST /api/asks). It arrives in `buyer`, goes through buyerToken()
- * and is gone before the INSERT runs; never logged, never echoed back. The
- * dollar figures are the opposite: stored exactly as sent, in the clear,
- * which the form says out loud and the transparency page repeats.
+ * Same contract as POST /api/asks: no buyer name crosses the wire in any
+ * form. The browser blinds the name, /api/voprf/evaluate computes the token
+ * without seeing it, the browser verifies the proof and submits only the
+ * finished "v2:" token (lib/voprf.ts). A request still carrying a `buyer`
+ * field is rejected outright. The dollar figures are the opposite: stored
+ * exactly as sent, in the clear, which the form says out loud and the
+ * transparency page repeats.
  */
 
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { DbNotConfiguredError } from "@/lib/db";
-import { buyerToken } from "@/lib/crypto";
-import { isKnownBuyer } from "@/lib/buyers";
+import { isBuyerTokenV2 } from "@/lib/voprf";
 import {
   MAX_DEAL_PARTICIPANTS,
   createDeal,
@@ -25,10 +27,9 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const MAX_BUYER = 80;
-
 type Body = {
-  buyer?: string;
+  buyerTokenV2?: string;
+  buyerIsOther?: boolean;
   askId?: string | null;
   totalUsd?: number;
   myShareUsd?: number;
@@ -59,31 +60,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Expected JSON." }, { status: 400 });
   }
 
-  const rawBuyer = (body.buyer ?? "").trim();
-  if (rawBuyer.length === 0) {
+  if ("buyer" in body) {
+    // A raw name showing up at all means an out-of-date or hostile client.
     return NextResponse.json(
-      { error: "Name the buyer. It is keyed and discarded, not stored." },
+      { error: "This API no longer accepts a buyer name in any form. Send the blinded token." },
       { status: 400 },
     );
   }
-  if (rawBuyer.length > MAX_BUYER) {
+  const token = body.buyerTokenV2 ?? "";
+  if (!isBuyerTokenV2(token)) {
     return NextResponse.json(
-      { error: `Buyer name: ${MAX_BUYER} characters max.` },
+      { error: "Missing or malformed blinded buyer token." },
       { status: 400 },
     );
   }
-
-  // The name -> token transform, and the last moment the name exists.
-  let token: string;
-  try {
-    token = buyerToken(rawBuyer);
-  } catch {
+  if (typeof body.buyerIsOther !== "boolean") {
     return NextResponse.json(
-      { error: "That buyer name is empty once normalized. Type a real one." },
+      { error: "Say whether the buyer was off-list." },
       { status: 400 },
     );
   }
-  const buyerIsOther = !isKnownBuyer(rawBuyer);
+  const buyerIsOther = body.buyerIsOther;
 
   const rawParticipants = Array.isArray(body.participants) ? body.participants : [];
   const participants = rawParticipants.map((p) => ({

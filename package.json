@@ -8,10 +8,14 @@
     "build": "npm run gen:schema && next build",
     "start": "next start",
     "seed": "npm run gen:schema && node scripts/seed.ts",
+    "migrate:buyer-tokens": "npm run gen:schema && node scripts/migrate-buyer-tokens.ts",
     "reset-db": "node scripts/reset-db.mjs"
   },
   "dependencies": {
+    "@cloudflare/voprf-ts": "^1.0.0",
     "@libsql/client": "^0.17.4",
+    "@noble/curves": "^2.3.0",
+    "@noble/hashes": "^2.3.0",
     "next": "16.3.2",
     "react": "19.2.8",
     "react-dom": "19.2.8"

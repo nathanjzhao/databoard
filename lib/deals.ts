@@ -28,6 +28,7 @@
 
 import { getDb, now } from "./db.ts";
 import { newId } from "./crypto.ts";
+import { buyerChip } from "./voprf.ts";
 
 /* ------------------------------------------------------------- constants */
 
@@ -255,7 +256,7 @@ export async function createDeal(
   const dealId = newId("dl");
   const threadId = resolved.length > 0 ? newId("thr") : null;
   const t = now();
-  const subject = `Deal room · Buyer #${input.buyerToken.slice(0, 4)} · $${total.toLocaleString("en-US")}`;
+  const subject = `Deal room · Buyer #${buyerChip(input.buyerToken)} · $${total.toLocaleString("en-US")}`;
 
   const tx = await db.transaction("write");
   try {

@@ -13,11 +13,13 @@
 
 import {
   createHmac,
+  hkdfSync,
   randomBytes,
   scryptSync,
   timingSafeEqual,
   createHash,
 } from "node:crypto";
+import { buyerChip, normalizeBuyer, VOPRF_HKDF_LABEL } from "./voprf.ts";
 
 /** Dev-only fallback. Real deployments set SERVER_PEPPER in the environment. */
 const DEV_PEPPER = "dev-pepper-not-for-production-0000000000000000";
@@ -104,18 +106,17 @@ export function contactBlindIndex(rawContact: string): string {
 
 /* ---------------------------------------------------------------- buyers */
 
-/** Casefold, collapse whitespace, drop punctuation, so "Open AI" == "OpenAI". */
-export function normalizeBuyer(raw: string): string {
-  return (raw ?? "")
-    .toLowerCase()
-    .normalize("NFKD")
-    .replace(/[^a-z0-9]+/g, "")
-    .trim();
-}
+// The normalization rule lives in lib/voprf.ts now, because the CLIENT is the
+// one that normalizes before blinding; this re-export keeps the server side
+// on the identical bytes.
+export { normalizeBuyer };
 
 /**
- * HMAC(SERVER_PEPPER, "buyer" | normalized). The lab name is received over the
- * wire, passed through here, and discarded in the same request.
+ * LEGACY v1 token: HMAC(SERVER_PEPPER, "buyer" | normalized). No request
+ * handler mints these any more; the compose paths take a v2 OPRF token the
+ * browser minted without the server seeing the name (lib/voprf.ts). This
+ * function remains so scripts/migrate-buyer-tokens.ts can compute which old
+ * rows to rewrite. Do not call it from a route.
  */
 export function buyerToken(rawName: string): string {
   const normalized = normalizeBuyer(rawName);
@@ -123,14 +124,28 @@ export function buyerToken(rawName: string): string {
   return hmacHex("buyer", normalized);
 }
 
-/** The public handle for a buyer token: "Buyer #a4f1". */
+/** The public handle for a buyer token: "Buyer #a4f1". Prefix-aware. */
 export function buyerLabel(token: string): string {
-  return `Buyer #${token.slice(0, 4)}`;
+  return `Buyer #${buyerChip(token)}`;
 }
 
 /** Just the four hex characters, for places that render the label themselves. */
 export function buyerShort(token: string): string {
-  return token.slice(0, 4);
+  return buyerChip(token);
+}
+
+/**
+ * Seed for the server's VOPRF key: HKDF-SHA256 over SERVER_PEPPER with the
+ * fixed info label "databoard-voprf-v1". The seed then goes through RFC 9497
+ * DeriveKeyPair (app/api/voprf/server.ts) to become a valid scalar, so every
+ * environment's OPRF key is a pure function of its pepper. Rotating the
+ * pepper rotates this key too, which silently breaks token continuity unless
+ * scripts/migrate-buyer-tokens.ts is re-run for the known-buyer rows.
+ */
+export function voprfKeySeed(): Uint8Array {
+  return new Uint8Array(
+    hkdfSync("sha256", serverPepper(), "databoard", VOPRF_HKDF_LABEL, 32),
+  );
 }
 
 /* -------------------------------------------------------------- passwords */

@@ -5,11 +5,13 @@
  * buyer chip, the status mark. Presentational only, no hooks and no server
  * imports, so both server pages and client forms can render them.
  *
- * BuyerChip receives a token that was minted server-side by lib/crypto.ts.
- * Nothing in here ever sees a buyer name.
+ * BuyerChip receives a stored buyer token: "v2:" OPRF tokens the browser
+ * minted blind (lib/voprf.ts), or legacy keyed hashes on old rows. Nothing
+ * in here ever sees a buyer name.
  */
 
 import { categoryLabel, type AskStatus } from "@/lib/taxonomy";
+import { buyerChip } from "@/lib/voprf";
 
 /* ---------------------------------------------------------- supply meter */
 
@@ -63,8 +65,8 @@ export function SupplyMeter({
 /* ------------------------------------------------------------ buyer chip */
 
 /**
- * "Buyer #2cee". Four hex characters of a keyed hash: enough to see that two
- * asks point at the same buyer, not enough to say who. Off-list buyers (a
+ * "Buyer #2cee". Four hex characters of a blinded token: enough to see that
+ * two asks point at the same buyer, not enough to say who. Off-list buyers (a
  * name typed into "Other") carry a small mark so the board is honest that
  * the token came from outside the shared dropdown.
  */
@@ -87,8 +89,8 @@ export function BuyerChip({
       ].join(" ")}
       title={
         isOther
-          ? "Off-list buyer. The name was typed, keyed and discarded; only this token remains."
-          : "Keyed buyer token. Same four characters on another ask means the same buyer."
+          ? "Off-list buyer. The name was blinded in the poster's browser; only this token exists here."
+          : "Blinded buyer token. Same four characters on another ask means the same buyer."
       }
     >
       <span
@@ -97,7 +99,7 @@ export function BuyerChip({
           dim ? "text-ink-ghost" : "text-amber",
         ].join(" ")}
       >
-        #{token.slice(0, 4)}
+        #{buyerChip(token)}
       </span>
       {isOther ? (
         <span className="font-mono text-[0.5625rem] uppercase tracking-[0.1em] text-ink-ghost">

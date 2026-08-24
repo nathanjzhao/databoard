@@ -2,21 +2,23 @@
  * POST /api/asks
  *
  * Body:  { title, category, description, modalityTags, volume, priceBand,
- *          supplyFilledPct, buyer }
+ *          supplyFilledPct, buyerTokenV2, buyerIsOther }
  * Reply: { id }
  *
- * The one route where a buyer name crosses the wire. It arrives in `buyer`,
- * goes through buyerToken() (HMAC keyed with the server pepper), and is gone
- * by the time the INSERT runs. It is never logged, never echoed back, and
- * there is no column it could land in. Everything else is stored as typed,
- * which the compose form says out loud.
+ * No buyer name crosses the wire here any more, in any form. The browser
+ * blinds the name, has /api/voprf/evaluate compute the token without seeing
+ * it, verifies the proof, and submits only the finished "v2:" token
+ * (lib/voprf.ts). A request that still carries a `buyer` field is rejected
+ * outright rather than quietly accepted, so the old behavior cannot be
+ * resurrected by an old client. Everything else is stored as typed, which
+ * the compose form says out loud.
  */
 
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { DbNotConfiguredError, getDb, now } from "@/lib/db";
-import { buyerToken, newId } from "@/lib/crypto";
-import { isKnownBuyer } from "@/lib/buyers";
+import { newId } from "@/lib/crypto";
+import { isBuyerTokenV2 } from "@/lib/voprf";
 import { CATEGORIES, MODALITIES, PRICE_BANDS, packTags } from "@/lib/taxonomy";
 import { clampPct, statusForPct } from "@/components/ask/format";
 
@@ -26,7 +28,6 @@ export const dynamic = "force-dynamic";
 const MAX_TITLE = 140;
 const MAX_DESCRIPTION = 4000;
 const MAX_VOLUME = 80;
-const MAX_BUYER = 80;
 
 const CATEGORY_SLUGS = new Set<string>(CATEGORIES.map((c) => c.slug));
 const MODALITY_SET = new Set<string>(MODALITIES);
@@ -40,7 +41,8 @@ type Body = {
   volume?: string;
   priceBand?: string;
   supplyFilledPct?: number;
-  buyer?: string;
+  buyerTokenV2?: string;
+  buyerIsOther?: boolean;
 };
 
 function problem(body: Body): string | null {
@@ -72,9 +74,16 @@ function problem(body: Body): string | null {
     return "Supply filled must be between 0 and 100.";
   }
 
-  const buyer = (body.buyer ?? "").trim();
-  if (buyer.length === 0) return "Name the buyer. It is keyed and discarded, not stored.";
-  if (buyer.length > MAX_BUYER) return `Buyer name: ${MAX_BUYER} characters max.`;
+  if ("buyer" in body) {
+    // A raw name showing up at all means an out-of-date or hostile client.
+    return "This API no longer accepts a buyer name in any form. Send the blinded token.";
+  }
+  if (!isBuyerTokenV2(body.buyerTokenV2 ?? "")) {
+    return "Missing or malformed blinded buyer token.";
+  }
+  if (typeof body.buyerIsOther !== "boolean") {
+    return "Say whether the buyer was off-list.";
+  }
 
   return null;
 }
@@ -93,17 +102,12 @@ export async function POST(request: Request) {
   const bad = problem(body);
   if (bad) return NextResponse.json({ error: bad }, { status: 400 });
 
-  // The name -> token transform, and the last moment the name exists.
-  let token: string;
-  try {
-    token = buyerToken(body.buyer ?? "");
-  } catch {
-    return NextResponse.json(
-      { error: "That buyer name is empty once normalized. Type a real one." },
-      { status: 400 },
-    );
-  }
-  const buyerIsOther = isKnownBuyer(body.buyer ?? "") ? 0 : 1;
+  // Already a token: the browser minted it under the published key and
+  // verified the proof before sending. The name it encodes never existed on
+  // this side of the wire. buyer_is_other stays what it always was, a
+  // single self-declared honesty bit about the dropdown.
+  const token = body.buyerTokenV2 ?? "";
+  const buyerIsOther = body.buyerIsOther ? 1 : 0;
 
   const pct = clampPct(body.supplyFilledPct ?? 0);
   const id = newId("ask");

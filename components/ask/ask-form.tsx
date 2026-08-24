@@ -8,15 +8,18 @@
  * exact row the database will keep, including the one thing it will not
  * keep, which is the buyer's name.
  *
- * The buyer name is sent to POST /api/asks once, keyed into a token there,
- * and discarded. This component never computes the token because it cannot:
- * the pepper never leaves the server. The receipt shows #???? on purpose.
+ * The buyer name never leaves this component in the clear. On submit it is
+ * blinded in the browser, evaluated by the server without being seen
+ * (RFC 9497 VOPRF, lib/voprf.ts), proof-checked against the published key,
+ * and only the finished "v2:" token goes to POST /api/asks. The receipt
+ * shows a placeholder because the token exists only after that round trip.
  */
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BUYER_OPTIONS, OTHER_BUYER, isKnownBuyer } from "@/lib/buyers";
+import { mintBuyerTokenV2 } from "@/lib/voprf";
 import { CATEGORIES, MODALITIES, PRICE_BANDS, packTags } from "@/lib/taxonomy";
 import { statusForPct } from "@/components/ask/format";
 
@@ -78,6 +81,11 @@ export function AskForm() {
     setBusy(true);
     setError(null);
     try {
+      // Blind, evaluate, verify, unblind. The name stays in this tab; only
+      // the finished token is in the POST below. Any failure (offline,
+      // rate limit, a proof that does not check out) lands in the catch
+      // and nothing is submitted. There is no plaintext fallback.
+      const buyerTokenV2 = await mintBuyerTokenV2(buyer);
       const res = await fetch("/api/asks", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -89,7 +97,8 @@ export function AskForm() {
           volume: volume.trim(),
           priceBand,
           supplyFilledPct: pct,
-          buyer,
+          buyerTokenV2,
+          buyerIsOther: !isKnownBuyer(buyer),
         }),
       });
       const data = await res.json();
@@ -286,7 +295,8 @@ export function AskForm() {
             ) : null}
           </div>
           <p className="text-[0.75rem] leading-relaxed text-ink-faint">
-            The name becomes a token on arrival, never stored. Pick from the
+            Blinded before send: the name is scrambled in this tab and the
+            server computes its token without ever seeing it. Pick from the
             list so tokens line up.{" "}
             <Link href="/transparency" className="text-blue hover:text-amber">
               How tokens work
@@ -383,7 +393,7 @@ function Receipt({
         ["volume", volume.trim() || "·"],
         ["price_band", priceBand],
         ["supply_filled_pct", String(pct)],
-        ["buyer_token", buyer ? "#???? · minted server-side" : "·"],
+        ["buyer_token", buyer ? "v2:???? · blinded in this tab" : "·"],
         ["buyer_is_other", buyer ? (isKnownBuyer(buyer) ? "0" : "1") : "·"],
         ["status", derivedStatus],
         ["user_id", "your account id"],
@@ -411,7 +421,7 @@ function Receipt({
         </dl>
         <div className="border-t border-rule bg-amber-wash px-4 py-3">
           <p className="text-[0.75rem] leading-relaxed text-ink-dim">
-            Not kept: the buyer&apos;s name
+            Never sent: the buyer&apos;s name
             {buyer ? (
               <span className="text-amber"> ({buyer})</span>
             ) : null}

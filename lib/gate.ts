@@ -12,8 +12,20 @@ export const SESSION_COOKIE = "bt_session";
 /** Where a logged-out visitor lands, whatever they asked for. */
 export const GATE_PATH = "/gate";
 
-/** Exact paths reachable without a session cookie. */
-const PUBLIC_PATHS = new Set(["/gate", "/login", "/signup", "/transparency"]);
+/**
+ * Exact paths reachable without a session cookie. The VOPRF public key is
+ * public on purpose: it is the verification anchor for blinded buyer
+ * tokens, and anyone must be able to check that the key printed on
+ * /transparency is the key the server actually answers with. Evaluation
+ * itself (/api/voprf/evaluate) stays behind a session.
+ */
+const PUBLIC_PATHS = new Set([
+  "/gate",
+  "/login",
+  "/signup",
+  "/transparency",
+  "/api/voprf/pubkey",
+]);
 
 /**
  * Prefixes reachable without a session cookie. /transparency/ covers the

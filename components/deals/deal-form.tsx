@@ -4,8 +4,9 @@
  * components/deals/deal-form.tsx
  *
  * The record-a-deal form. Same docket layout as the compose form: numbered
- * sections, and the arithmetic laid bare. A deal names a buyer (keyed and
- * discarded server-side, same as asks), an optional linked ask, a total, and
+ * sections, and the arithmetic laid bare. A deal names a buyer (blinded in
+ * this tab and never sent in the clear, same as asks), an optional linked
+ * ask, a total, and
  * a split: the reporter's own share plus zero or more named participants,
  * each with an exact dollar share. Shares are uneven on purpose; the live
  * math shows allocated versus total and the unallocated remainder, and blocks
@@ -18,7 +19,8 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { BUYER_OPTIONS, OTHER_BUYER } from "@/lib/buyers";
+import { BUYER_OPTIONS, OTHER_BUYER, isKnownBuyer } from "@/lib/buyers";
+import { buyerChip, mintBuyerTokenV2 } from "@/lib/voprf";
 import { usdExact } from "@/components/deals/format";
 import type { LinkableAsk } from "@/lib/deals";
 
@@ -103,11 +105,16 @@ export function DealForm({
     setBusy(true);
     setError(null);
     try {
+      // Blind, evaluate, verify, unblind; the name stays in this tab and
+      // only the finished token is posted. Failures land in the catch and
+      // nothing is submitted. There is no plaintext fallback.
+      const buyerTokenV2 = await mintBuyerTokenV2(buyer);
       const res = await fetch("/api/deals", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          buyer,
+          buyerTokenV2,
+          buyerIsOther: !isKnownBuyer(buyer),
           askId: askId || null,
           totalUsd,
           myShareUsd,
@@ -190,7 +197,8 @@ export function DealForm({
           </label>
         ) : null}
         <p className="text-[0.75rem] leading-relaxed text-ink-faint">
-          The buyer name becomes a token, as on asks (
+          Blinded before send: the buyer name is scrambled in this tab and
+          the server computes its token without seeing it, as on asks (
           <Link href="/transparency" className="text-blue hover:text-amber">
             how
           </Link>
@@ -208,7 +216,7 @@ export function DealForm({
             <option value="">No linked ask</option>
             {linkableAsks.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.title} · @{a.posterUsername} · Buyer #{a.buyerToken.slice(0, 4)}
+                {a.title} · @{a.posterUsername} · Buyer #{buyerChip(a.buyerToken)}
               </option>
             ))}
           </select>
