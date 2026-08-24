@@ -137,9 +137,18 @@ async function signUp(
   await p.getByRole("button", { name: "Continue" }).click();
 
   await expect(p.getByText("Pick what we actually keep")).toBeVisible();
-  await p.getByLabel("Username").fill(opts.username);
   await p.getByLabel("Password").fill(opts.password);
   await p.getByRole("button", { name: "Create account" }).click();
+
+  // The handle is assigned by the server and shown once on the done screen.
+  // Read it back into opts so everything downstream uses the real one.
+  const handle =
+    (await p.getByTestId("assigned-handle").textContent({ timeout: 15_000 }))
+      ?.replace(/^@/, "")
+      .trim() ?? "";
+  expect(handle).toMatch(/^[a-z0-9][a-z0-9_-]{2,23}$/);
+  opts.username = handle;
+  await p.getByRole("button", { name: "Go to the board" }).click();
   await expect(p.getByText(`@${opts.username}`).first()).toBeVisible({
     timeout: 15_000,
   });
@@ -152,7 +161,7 @@ async function signOut(p: Page) {
 
 async function logIn(p: Page, username: string, password: string) {
   await p.goto("/login");
-  await p.getByLabel("Username").fill(username);
+  await p.getByLabel("Handle").fill(username);
   await p.getByLabel("Password").fill(password);
   await p.getByRole("button", { name: "Sign in" }).click();
   await p.waitForURL((u) => u.pathname === "/");

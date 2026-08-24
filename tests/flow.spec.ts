@@ -125,14 +125,18 @@ async function signUp(
   await p.getByRole("button", { name: "Continue" }).click();
 
   await expect(p.getByText("Pick what we actually keep")).toBeVisible();
-  await p.getByLabel("Username").fill(opts.username);
   await p.getByLabel("Password").fill(opts.password);
   await p.getByRole("button", { name: "Create account" }).click();
 
-  // On success the flow shows its "done" screen, then router.refresh() makes
-  // the /signup server component redirect the now-signed-in user to the
-  // board. Either way the durable outcome is the same: the session cookie is
-  // set and the chrome shows the new handle.
+  // The handle is assigned by the server and shown once on the done screen.
+  // Read it back into opts so everything downstream uses the real one.
+  const handle =
+    (await p.getByTestId("assigned-handle").textContent({ timeout: 15_000 }))
+      ?.replace(/^@/, "")
+      .trim() ?? "";
+  expect(handle).toMatch(/^[a-z0-9][a-z0-9_-]{2,23}$/);
+  opts.username = handle;
+  await p.getByRole("button", { name: "Go to the board" }).click();
   await expect(p.getByText(`@${opts.username}`).first()).toBeVisible({
     timeout: 15_000,
   });
@@ -146,7 +150,7 @@ async function signOut(p: Page) {
 
 async function logIn(p: Page, username: string, password: string) {
   await p.goto("/login");
-  await p.getByLabel("Username").fill(username);
+  await p.getByLabel("Handle").fill(username);
   await p.getByLabel("Password").fill(password);
   await p.getByRole("button", { name: "Sign in" }).click();
   await p.waitForURL((u) => u.pathname === "/");
@@ -230,15 +234,14 @@ test("00 gate: logged-out / redirects, /transparency public, /messages gated", a
 });
 
 test("01 user A signs up: org account, phone contact, demo code from the UI", async () => {
-  await signUp(page, {
-    realName: USER_A.realName,
-    org: USER_A.org,
-    contact: USER_A.contact,
-    username: USER_A.username,
-    password: USER_A.password,
-    codeShot: "03-signup-a-code.png",
-    doneShot: "04-signup-a-done.png",
-  });
+  // Pass the user object itself: signUp writes the assigned handle back.
+  await signUp(
+    page,
+    Object.assign(USER_A, {
+      codeShot: "03-signup-a-code.png",
+      doneShot: "04-signup-a-done.png",
+    }),
+  );
 
   // Landed logged in: the gated board renders with A's handle in the chrome.
   await page.goto("/");
@@ -256,13 +259,7 @@ test("02 user A posts an ask naming Anthropic at 30% filled", async () => {
 
 test("03 log out; user B signs up individual with email and posts a second Anthropic ask", async () => {
   await signOut(page);
-  await signUp(page, {
-    realName: USER_B.realName,
-    contact: USER_B.contact,
-    username: USER_B.username,
-    password: USER_B.password,
-    doneShot: "06-signup-b-done.png",
-  });
+  await signUp(page, Object.assign(USER_B, { doneShot: "06-signup-b-done.png" }));
   askBUrl = await postAsk(page, ASK_B);
   await shot(page, "07-ask-b-posted.png");
   expect(askBUrl).not.toBe(askAUrl);

@@ -13,13 +13,13 @@
  */
 
 import { NextResponse } from "next/server";
+import { generateHandle, suffixHandle } from "@/lib/handles";
 import { verifyChallenge } from "@/lib/verify";
 import {
   SESSION_COOKIE,
   createSession,
   createUser,
   sessionCookieOptions,
-  usernameProblem,
   usernameTaken,
 } from "@/lib/auth";
 import { passwordProblem } from "@/lib/crypto";
@@ -52,9 +52,6 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Expected JSON." }, { status: 400 });
   }
 
-  const badUsername = usernameProblem(body.username ?? "");
-  if (badUsername) return NextResponse.json({ error: badUsername }, { status: 400 });
-
   const badPassword = passwordProblem(body.password ?? "");
   if (badPassword) return NextResponse.json({ error: badPassword }, { status: 400 });
 
@@ -73,13 +70,16 @@ export async function POST(request: Request) {
   }
 
   try {
-    if (await usernameTaken(body.username ?? "")) {
-      return NextResponse.json({ error: "That username is taken." }, { status: 409 });
+    // The handle is assigned, never chosen (lib/handles.ts): a chosen name is
+    // the one field a person could use to point back at themselves.
+    let handle = generateHandle();
+    for (let i = 0; i < 8 && (await usernameTaken(handle)); i++) {
+      handle = i < 3 ? generateHandle() : suffixHandle(generateHandle());
     }
 
     // normalizedContact goes into an HMAC inside createUser and nowhere else.
     const created = await createUser(
-      body.username ?? "",
+      handle,
       body.password ?? "",
       verified.accountType,
       verified.normalizedContact,

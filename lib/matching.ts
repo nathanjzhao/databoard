@@ -279,7 +279,7 @@ export async function createCollabRequest(
   const ask = askRs.rows[0];
   if (!ask) return { ok: false, error: "not_found" };
   if (String(ask.user_id) === requesterId) return { ok: false, error: "own_ask" };
-  if (String(ask.status) === "closed") return { ok: false, error: "ask_closed" };
+  // Closed asks still take requests: the ask is finished, the poster is not.
 
   const existingRs = await db.execute({
     sql: `SELECT id, status FROM collab_requests WHERE ask_id = ? AND requester_id = ?`,

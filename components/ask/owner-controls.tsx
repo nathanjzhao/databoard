@@ -92,15 +92,13 @@ export function OwnerControls({
 
   if (status === "closed") {
     return (
-      <div className="relative overflow-hidden border border-rule bg-panel px-5 py-5">
-        <div className="bt-hatch pointer-events-none absolute inset-0 opacity-40" />
-        <div className="relative">
-          <div className="bt-label text-ink-ghost">Your ask, closed</div>
-          <p className="mt-2 text-[0.8125rem] leading-relaxed text-ink-faint">
-            It stays on the board as a record at {supplyFilledPct}% filled.
-            There is no reopen; post a fresh ask if the gap comes back.
-          </p>
-        </div>
+      <div className="border border-rule bg-panel px-5 py-5">
+        <div className="bt-label">Your ask, closed</div>
+        <p className="mt-2 text-[0.8125rem] leading-relaxed text-ink-dim">
+          It stays on the board as a record at {supplyFilledPct}% filled, and
+          people can still reach you through it. There is no reopen; post a
+          fresh ask if the gap comes back.
+        </p>
       </div>
     );
   }

@@ -12,7 +12,6 @@
  */
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { INDEPENDENT_AFFILIATION } from "@/lib/taxonomy";
 import { deriveIdentityKeys } from "@/lib/e2ee";
@@ -38,7 +37,6 @@ const STEP_TITLE: Record<Step, string> = {
 };
 
 export function SignupFlow() {
-  const router = useRouter();
   const [step, setStep] = useState<Step>("identity");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -51,7 +49,6 @@ export function SignupFlow() {
   const [issued, setIssued] = useState<Issued | null>(null);
   const [code, setCode] = useState("");
 
-  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [finalUsername, setFinalUsername] = useState("");
 
@@ -104,7 +101,6 @@ export function SignupFlow() {
           affiliation,
           code,
           challenge: issued.challenge,
-          username,
           password,
         }),
       });
@@ -135,8 +131,9 @@ export function SignupFlow() {
       setRealName("");
       setOrgName("");
       setPassword("");
+      // No router.refresh() here: /signup redirects signed-in visitors, and
+      // the handle below has to be seen once before anything navigates.
       setStep("done");
-      router.refresh();
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -305,33 +302,19 @@ export function SignupFlow() {
         <>
           <p className="mt-3 max-w-[52ch] text-[0.875rem] leading-relaxed text-ink-dim">
             From everything you typed so far, the database will hold exactly
-            four things: this username, a hash of this password, whether you
-            are an org or an individual, and a blind index of your contact.
-            The username is the only one anybody sees.
+            four things: a handle we assign you, a hash of this password,
+            whether you are an org or an individual, and a blind index of
+            your contact. The handle is the only one anybody sees, and you do
+            not get to pick it: a chosen name is the one thing here that could
+            point back at you.
           </p>
           <form onSubmit={submitCredentials} className="mt-7 space-y-4">
-            <label className="block">
-              <span className="bt-label">Username</span>
-              <input
-                className="bt-input mt-2 font-mono"
-                autoFocus
-                autoComplete="off"
-                spellCheck={false}
-                placeholder="quiet_ledger"
-                value={username}
-                onChange={(e) => setUsername(e.target.value.toLowerCase())}
-              />
-              <p className="mt-2 text-[0.75rem] text-ink-faint">
-                3 to 24 characters. Lowercase letters, numbers, dashes,
-                underscores. Pick something that does not point back at you.
-              </p>
-            </label>
-
             <label className="block">
               <span className="bt-label">Password</span>
               <input
                 className="bt-input mt-2 font-mono"
                 type="password"
+                autoFocus
                 autoComplete="new-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -356,7 +339,7 @@ export function SignupFlow() {
               </button>
               <button
                 type="submit"
-                disabled={busy || username.trim().length < 3 || password.length < 10}
+                disabled={busy || password.length < 10}
                 className="bt-btn bt-btn-primary flex-1"
               >
                 {busy ? "Creating" : "Create account"}
@@ -368,19 +351,36 @@ export function SignupFlow() {
 
       {step === "done" ? (
         <>
-          <p className="mt-3 max-w-[52ch] text-[0.875rem] leading-relaxed text-ink-dim">
-            You are signed in as{" "}
-            <span className="font-mono text-ink">@{finalUsername}</span>. Your
-            name, your org and your contact were checked, attested and
+          <div className="mt-6 border border-rule-strong px-5 py-5">
+            <div className="bt-label">Your handle</div>
+            <div
+              data-testid="assigned-handle"
+              className="bt-display mt-2 break-all font-mono text-[1.75rem] leading-none text-ink"
+            >
+              @{finalUsername}
+            </div>
+            <p className="mt-3 text-[0.8125rem] leading-relaxed text-ink-dim">
+              Assigned at random, so it points at nothing. Write it down next to
+              your password: it is how you sign in, and the only name anyone
+              here will ever see.
+            </p>
+          </div>
+
+          <p className="mt-5 max-w-[52ch] text-[0.875rem] leading-relaxed text-ink-dim">
+            Your name, your org and your contact were checked, attested and
             discarded. If that sounds like a claim rather than a fact, the
             transparency page shows the entire schema so you can look for the
             columns they would need to live in.
           </p>
 
           <div className="mt-6 flex gap-2">
-            <Link href="/" className="bt-btn bt-btn-primary">
+            <button
+              type="button"
+              onClick={() => window.location.assign("/")}
+              className="bt-btn bt-btn-primary"
+            >
               Go to the board
-            </Link>
+            </button>
             <Link href="/transparency" className="bt-btn">
               Read the schema
             </Link>

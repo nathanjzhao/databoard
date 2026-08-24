@@ -238,16 +238,12 @@ export default async function BoardPage({
               const closed = a.status === "closed";
               return (
                 <li key={a.id} className="relative">
-                  {closed ? (
-                    <div className="bt-hatch pointer-events-none absolute inset-0 opacity-30" />
-                  ) : null}
                   <Link
                     href={`/ask/${a.id}`}
                     className={[
                       "group relative grid gap-x-4 gap-y-2.5 px-4 py-4 transition-colors",
                       "lg:grid-cols-[minmax(0,1fr)_6.5rem_7rem_8rem_7rem_5rem] lg:items-center",
                       "hover:bg-panel-2",
-                      closed ? "opacity-70" : "",
                     ].join(" ")}
                   >
                     <div className="min-w-0">

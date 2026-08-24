@@ -69,26 +69,29 @@ const DEAL3 = { buyer: "Anthropic", total: "10000", myShare: "10000" };
 
 /** Evidence originals: hashed in the browser, never uploaded. The sentinel
  *  strings must appear NOWHERE in the DB; only their SHA-256 may. */
-const EVIDENCE = {
-  [USER_C.username]: {
+// Keyed by user object, not by handle: handles are assigned at signup and
+// only known once signUp() has written them back.
+type Evidence = { file: string; content: string; label: string };
+const EVIDENCE = new Map<{ username: string }, Evidence>([
+  [USER_C, {
     file: "c-original.txt",
     content:
       "EVIDENCE ORIGINAL wire credit advice unmistakable-cove-sentinel-93ab41 ref 5512\n",
     label: "bank statement line, wire credit",
-  },
-  [USER_D.username]: {
+  }],
+  [USER_D, {
     file: "d-original.txt",
     content:
       "EVIDENCE ORIGINAL countersigned receipt unmistakable-dune-sentinel-77fe02 invoice 88\n",
     label: "signed receipt email export",
-  },
-  [USER_E.username]: {
+  }],
+  [USER_E, {
     file: "e-original.txt",
     content:
       "EVIDENCE ORIGINAL remittance advice unmistakable-elm-sentinel-4c19d8 batch 3\n",
     label: "remittance advice PDF",
-  },
-} as const;
+  }],
+]);
 
 function sha256HexOf(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
@@ -142,9 +145,18 @@ async function signUp(
   await p.getByRole("button", { name: "Continue" }).click();
 
   await expect(p.getByText("Pick what we actually keep")).toBeVisible();
-  await p.getByLabel("Username").fill(opts.username);
   await p.getByLabel("Password").fill(opts.password);
   await p.getByRole("button", { name: "Create account" }).click();
+
+  // The handle is assigned by the server and shown once on the done screen.
+  // Read it back into opts so everything downstream uses the real one.
+  const handle =
+    (await p.getByTestId("assigned-handle").textContent({ timeout: 15_000 }))
+      ?.replace(/^@/, "")
+      .trim() ?? "";
+  expect(handle).toMatch(/^[a-z0-9][a-z0-9_-]{2,23}$/);
+  opts.username = handle;
+  await p.getByRole("button", { name: "Go to the board" }).click();
   await expect(p.getByText(`@${opts.username}`).first()).toBeVisible({
     timeout: 15_000,
   });
@@ -157,7 +169,7 @@ async function signOut(p: Page) {
 
 async function logIn(p: Page, username: string, password: string) {
   await p.goto("/login");
-  await p.getByLabel("Username").fill(username);
+  await p.getByLabel("Handle").fill(username);
   await p.getByLabel("Password").fill(password);
   await p.getByRole("button", { name: "Sign in" }).click();
   await p.waitForURL((u) => u.pathname === "/");
@@ -443,7 +455,7 @@ test.describe.configure({ mode: "serial" });
 test.beforeAll(async ({ browser }) => {
   await fs.mkdir(VERIFY_DIR, { recursive: true });
   await fs.mkdir(EVIDENCE_DIR, { recursive: true });
-  for (const ev of Object.values(EVIDENCE)) {
+  for (const ev of [...EVIDENCE.values()]) {
     await fs.writeFile(path.join(EVIDENCE_DIR, ev.file), ev.content, "utf8");
   }
   context = await browser.newContext();
@@ -670,7 +682,7 @@ test("05 C, D, E each commit browser-hashed evidence; deal reaches evidence comm
     // E is already signed out of; log each in turn (E first since we are out).
     await logIn(page, user.username, user.password);
     await page.goto(`/deals/${deal1Id}`);
-    const ev = EVIDENCE[user.username];
+    const ev = EVIDENCE.get(user)!;
     const expectedHash = sha256HexOf(ev.content);
 
     await expect(page.getByText("Commit evidence")).toBeVisible();
@@ -867,7 +879,7 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     ...KNOWN_BUYERS.map((b) => b.toLowerCase().replace(/[^a-z0-9]+/g, "")),
     // The evidence ORIGINALS: hashed in the browser, never uploaded. Their
     // sentinel substrings must not exist in any row or any raw byte.
-    ...Object.values(EVIDENCE).map((e) => e.content.trim()),
+    ...[...EVIDENCE.values()].map((e) => e.content.trim()),
     "unmistakable-cove-sentinel-93ab41",
     "unmistakable-dune-sentinel-77fe02",
     "unmistakable-elm-sentinel-4c19d8",
@@ -931,7 +943,7 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     hashesRs.rows.map((r) => [String(r.username), String(r.evidence_hash ?? "")]),
   );
   for (const user of [USER_C, USER_D, USER_E]) {
-    const ev = EVIDENCE[user.username];
+    const ev = EVIDENCE.get(user)!;
     expect(byUser.get(user.username), `evidence hash for ${user.username}`).toBe(
       sha256HexOf(ev.content),
     );

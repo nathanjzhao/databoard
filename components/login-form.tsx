@@ -68,13 +68,13 @@ export function LoginForm() {
     <div className="mx-auto w-full max-w-[440px] px-5 py-16">
       <h1 className="bt-display text-[2rem] leading-[1.1] text-ink">Sign in</h1>
       <p className="mt-3 text-[0.875rem] leading-relaxed text-ink-dim">
-        Username and password. There is no reset flow, because we keep no
+        Handle and password. There is no reset flow, because we keep no
         address to send one to.
       </p>
 
       <form onSubmit={submit} className="mt-7 space-y-4">
         <label className="block">
-          <span className="bt-label">Username</span>
+          <span className="bt-label">Handle</span>
           <input
             className="bt-input mt-2 font-mono"
             autoFocus

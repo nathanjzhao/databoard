@@ -15,6 +15,7 @@ import { DbNotConfiguredNotice, PageStub } from "@/components/page-stub";
 import { StatusMark } from "@/components/ask/meta";
 import { timeAgo } from "@/components/ask/format";
 import { CollabPanel } from "@/components/ask/collab-button";
+import { DealPeople, type DealPerson } from "@/components/ask/deal-people";
 import { OwnerControls } from "@/components/ask/owner-controls";
 import { getSessionUser } from "@/lib/auth";
 import { getDb, isDbConfigured } from "@/lib/db";
@@ -129,6 +130,24 @@ export default async function AskDetailPage({
     });
     myRequest = rs.rows[0] ? (String(rs.rows[0].status) as CollabStatus) : null;
   }
+
+  // Whoever was on a confirmed deal behind this ask stays reachable, closed
+  // or not. The poster has their own panel; everyone else lists here.
+  const peopleRs = await db.execute({
+    sql: `SELECT u.username, COUNT(DISTINCT d.id) AS deals
+            FROM deals d
+            JOIN deal_participants dp ON dp.deal_id = d.id
+            JOIN users u ON u.id = dp.user_id
+           WHERE d.ask_id = ? AND dp.status = 'confirmed'
+             AND dp.user_id != ? AND dp.user_id != ?
+           GROUP BY u.username
+           ORDER BY deals DESC, u.username`,
+    args: [ask.id, ask.user_id, user.id],
+  });
+  const dealPeople: DealPerson[] = peopleRs.rows.map((r) => ({
+    username: String(r.username),
+    deals: Number(r.deals),
+  }));
 
   const nowMs = Date.now();
   const tags = unpackTags(ask.modality_tags);
@@ -273,20 +292,11 @@ export default async function AskDetailPage({
               supplyFilledPct={ask.supply_filled_pct}
               status={ask.status}
             />
-          ) : closed ? (
-            <div className="relative overflow-hidden border border-rule bg-panel px-5 py-5">
-              <div className="bt-hatch pointer-events-none absolute inset-0 opacity-40" />
-              <div className="relative">
-                <div className="bt-label text-ink-ghost">Closed</div>
-                <p className="mt-2 text-[0.8125rem] leading-relaxed text-ink-faint">
-                  This ask is not taking collaboration requests. It stays on
-                  the board as a record.
-                </p>
-              </div>
-            </div>
           ) : (
-            <CollabPanel askId={ask.id} existingStatus={myRequest} />
+            <CollabPanel askId={ask.id} existingStatus={myRequest} closed={closed} />
           )}
+
+          <DealPeople askId={ask.id} people={dealPeople} />
 
           {/* incoming requests, owner only */}
           {mine ? (

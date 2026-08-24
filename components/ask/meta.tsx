@@ -115,7 +115,7 @@ export function BuyerChip({
 const STATUS_STYLE: Record<AskStatus, { dot: string; text: string }> = {
   open: { dot: "bg-amber", text: "text-amber" },
   partial: { dot: "bg-green", text: "text-green" },
-  closed: { dot: "bg-red/70", text: "text-ink-ghost" },
+  closed: { dot: "bg-ink-dim", text: "text-ink-dim" },
 };
 
 export function StatusMark({ status }: { status: AskStatus }) {

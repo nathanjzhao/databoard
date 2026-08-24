@@ -320,7 +320,7 @@ export function AskForm() {
             {busy ? "Posting" : "Post to the board"}
           </button>
           <span className="text-[0.75rem] text-ink-faint">
-            Posts under @your username. Edits after: supply and close only.
+            Posts under your handle. Edits after: supply and close only.
           </span>
         </div>
       </form>

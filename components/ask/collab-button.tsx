@@ -17,7 +17,7 @@ type ExistingStatus = "pending" | "accepted" | "declined" | "withdrawn";
 
 const SENT_COPY: Record<ExistingStatus, string> = {
   pending:
-    "Request sent. The poster sees your username and your note, nothing else.",
+    "Request sent. The poster sees your handle and your note, nothing else.",
   accepted: "Accepted. Take it to Messages.",
   declined: "Declined. That is the whole story; there is no appeal flow.",
   withdrawn: "You withdrew this request.",
@@ -26,9 +26,12 @@ const SENT_COPY: Record<ExistingStatus, string> = {
 export function CollabPanel({
   askId,
   existingStatus,
+  closed = false,
 }: {
   askId: string;
   existingStatus: ExistingStatus | null;
+  /** A closed ask still takes requests; the copy stops pretending it is open. */
+  closed?: boolean;
 }) {
   const router = useRouter();
   const [note, setNote] = useState("");
@@ -88,9 +91,15 @@ export function CollabPanel({
   return (
     <div className="border border-rule bg-panel">
       <div className="border-b border-rule px-5 py-3">
-        <span className="bt-label">Have some of this?</span>
+        <span className="bt-label">{closed ? "Closed, poster still here" : "Have some of this?"}</span>
       </div>
       <div className="px-5 py-4">
+        {closed ? (
+          <p className="mb-4 text-[0.8125rem] leading-relaxed text-ink-dim">
+            This ask is filled or withdrawn. A request still reaches the poster,
+            who can open a thread with you as usual.
+          </p>
+        ) : null}
         <label className="block">
           <span className="bt-label">Note to the poster, optional</span>
           <textarea
@@ -108,10 +117,10 @@ export function CollabPanel({
             disabled={busy}
             className="bt-btn bt-btn-primary px-5 py-2"
           >
-            {busy ? "Sending" : "Request to collaborate"}
+            {busy ? "Sending" : closed ? "Reach out to the poster" : "Request to collaborate"}
           </button>
           <span className="text-[0.75rem] text-ink-faint">
-            One request per ask. The poster sees your username and this note.
+            One request per ask. The poster sees your handle and this note.
           </span>
         </div>
         {error ? (
