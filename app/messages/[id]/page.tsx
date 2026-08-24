@@ -27,7 +27,7 @@ export default async function ThreadPage({
       <PageStub
         eyebrow="Messages"
         title="Talk without swapping contact details."
-        blurb="Threads live on the board; nothing here ties a username to a phone number or an inbox."
+        blurb="Threads live on the board; nothing here ties a handle to a phone number or an inbox."
       >
         <DbNotConfiguredNotice />
       </PageStub>

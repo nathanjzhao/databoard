@@ -414,7 +414,7 @@ function ParticipantRowInput({
           }}
           onFocus={() => setOpen(true)}
           onBlur={() => setTimeout(() => setOpen(false), 150)}
-          aria-label="Participant username"
+          aria-label="Participant handle"
           autoComplete="off"
           spellCheck={false}
         />

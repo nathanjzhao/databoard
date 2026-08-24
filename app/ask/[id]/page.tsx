@@ -310,7 +310,7 @@ export default async function AskDetailPage({
               {incoming.length === 0 ? (
                 <p className="px-5 py-4 text-[0.8125rem] leading-relaxed text-ink-faint">
                   None yet. When someone claims to have some of this, their
-                  username and note land here.
+                  handle and note land here.
                 </p>
               ) : (
                 <ul className="divide-y divide-rule">

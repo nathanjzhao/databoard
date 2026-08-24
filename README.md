@@ -20,7 +20,8 @@ number, email, real name, org name, or buyer name. What is stored, and how:
   A match proves the contact received the code and the identity fields were
   attested at that moment. Then they are discarded. There is no codes table
   and no contacts table.
-- **Four stored fields per account.** Username, scrypt password hash, one
+- **Four stored fields per account.** An assigned handle (never chosen, so it
+  cannot point back at a person), scrypt password hash, one
   org-or-individual bit, and `contact_blind_index` =
   HMAC(pepper, normalized contact). The blind index exists only to make one
   contact one account (a UNIQUE constraint). It is never displayed, returned,

@@ -6,7 +6,7 @@
  */
 
 const CAN_SEE: ReadonlyArray<readonly [string, string]> = [
-  ["Usernames", "the one identity every account chose for itself"],
+  ["Handles", "the one identity per account, assigned at random so it points at nothing"],
   ["Ask contents", "titles, descriptions, volumes, price bands, status"],
   [
     "Blind tokens",
@@ -40,7 +40,7 @@ const CANNOT_SEE: ReadonlyArray<readonly [string, string]> = [
     "Which lab an ask names",
     "never received: blinded in your browser before send (RFC 9497 VOPRF), the server evaluates an opaque point",
   ],
-  ["Which human owns a username", "nothing stored links the two"],
+  ["Which human owns a handle", "assigned, not chosen, and nothing stored links the two"],
   [
     "Documents behind evidence hashes",
     "hashed in the participant's browser; the file itself never arrives",

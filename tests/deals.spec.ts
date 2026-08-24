@@ -202,7 +202,7 @@ async function recordDeal(
   for (let i = 0; i < opts.participants.length; i++) {
     await p.getByRole("button", { name: "+ add participant" }).click();
     const [username, share] = opts.participants[i];
-    await p.getByLabel("Participant username").nth(i).fill(username);
+    await p.getByLabel("Participant handle").nth(i).fill(username);
     await p.getByLabel("Participant share in USD").nth(i).fill(share);
   }
   if (opts.note) await p.getByLabel("Note, optional").fill(opts.note);
@@ -856,6 +856,35 @@ test("07 a $10k solo deal by C bumps only C's self value, to $50k displayed", as
     valueToSelfUsd: 50_000,
   });
   await signOut(page);
+});
+
+test("09 an ask with confirmed deals lists its people; Message opens a direct thread", async () => {
+  // Seeded, not created here: find an ask that a confirmed deal links to,
+  // whose participants exclude the viewer (C) and the poster.
+  const client = createClient({ url: `file:${DB_PATH}` });
+  const rs = await client.execute(
+    `SELECT d.ask_id AS aid
+       FROM deals d
+       JOIN deal_participants dp ON dp.deal_id = d.id
+       JOIN asks a ON a.id = d.ask_id
+      WHERE dp.status = 'confirmed' AND dp.user_id != a.user_id
+      LIMIT 1`,
+  );
+  client.close();
+  const askId = String(rs.rows[0]?.aid ?? "");
+  expect(askId).not.toBe("");
+
+  await logIn(page, USER_C.username, USER_C.password);
+  await page.goto(`/ask/${askId}`);
+  await expect(page.getByText("On the deals behind this ask")).toBeVisible();
+  await page.getByRole("button", { name: "Message" }).first().click();
+  await page.waitForURL(/\/messages\//);
+  // Same button, same pair, second time: the thread is reused, not duplicated.
+  const firstUrl = page.url();
+  await page.goto(`/ask/${askId}`);
+  await page.getByRole("button", { name: "Message" }).first().click();
+  await page.waitForURL(/\/messages\//);
+  expect(page.url()).toBe(firstUrl);
 });
 
 test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere in the DB; only hashes", async () => {

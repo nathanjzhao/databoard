@@ -300,7 +300,7 @@ export default async function TransparencyPage() {
                   [
                     "3",
                     "The server recomputes the HMAC and compares.",
-                    "A match proves the contact received the code and that the name and affiliation are the ones bound in at step 1; they were attested, and could not have been swapped afterward. Then they are discarded. What persists: username, scrypt password hash, an org-or-individual bit, and the contact blind index.",
+                    "A match proves the contact received the code and that the name and affiliation are the ones bound in at step 1; they were attested, and could not have been swapped afterward. Then they are discarded. What persists: an assigned handle, scrypt password hash, an org-or-individual bit, and the contact blind index.",
                   ],
                 ] as const
               ).map(([n, head, body]) => (
@@ -375,7 +375,7 @@ export default async function TransparencyPage() {
                 further than that, and the signup flow says so before you
                 commit: contact_blind_index is UNIQUE, so the contact that
                 opened the account cannot open another one. A forgotten
-                password does not just burn the username, it burns that
+                password does not just burn the handle, it burns that
                 contact&apos;s one seat at the table. Password managers exist;
                 use one.
               </p>
