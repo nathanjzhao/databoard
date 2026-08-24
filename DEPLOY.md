@@ -101,15 +101,32 @@ curl -s -X POST https://<prod-url>/api/auth/login \
 ## Going live (real OTP delivery)
 
 Demo mode shows the verification code on screen. Going live means the code is
-actually delivered, which needs a provider per contact kind: Resend for email,
-Twilio for SMS. Either alone is fine; `/api/auth/request-code` returns 503
-("email delivery is not configured" / "SMS delivery is not configured") plus a
-`contactKinds` list for the kind that has no provider, and the signup UI
-surfaces that copy.
+actually delivered, which needs a provider per contact kind: SES or Resend for
+email, Twilio for SMS. Either alone is fine; `/api/auth/request-code` returns
+503 ("email delivery is not configured" / "SMS delivery is not configured")
+plus a `contactKinds` list for the kind that has no provider, and the signup
+UI surfaces that copy.
 
 Do this in order. Flipping the flag before a provider works locks signups out.
 
-### 1. Email via Resend
+### 1a. Email via Amazon SES (configured 2026-08-24, preferred when present)
+
+Already provisioned: domain identity `send.taiku.live` (DKIM verified via the
+Route53 zone in account 975050290996), IAM user `databoard-otp` whose only
+permission is `ses:SendEmail` on that identity, and production env vars
+`SES_ACCESS_KEY_ID` / `SES_SECRET_ACCESS_KEY` / `SES_REGION` /
+`OTP_EMAIL_FROM`. When both SES and Resend are configured, SES wins.
+
+One gate remains: the SES account is in sandbox (verified recipients and the
+mailbox simulator only) until AWS approves the production access request filed
+the same day (typically under 24 hours). Check with:
+
+    aws sesv2 get-account --region us-west-2 --query ProductionAccessEnabled
+
+Once it prints `true`, flip the flag (step 3). Flipping while sandboxed would
+bounce every signup from an unverified address.
+
+### 1b. Email via Resend (alternative)
 
 1. In the Resend dashboard: Domains, add your sending domain, create the
    DKIM/SPF records it prints at your DNS host, wait for status "Verified".

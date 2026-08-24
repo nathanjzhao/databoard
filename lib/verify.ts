@@ -215,9 +215,17 @@ export type DeliveryResult = {
  * the provider's name and the HTTP status.
  */
 
-/** Email goes out when a Resend key is present. */
+/**
+ * Email goes out over SES when its scoped key pair is present, else over
+ * Resend when that key is present. SES creds use SES_-prefixed names because
+ * Vercel reserves the AWS_ prefix.
+ */
+function sesConfigured(): boolean {
+  return Boolean(process.env.SES_ACCESS_KEY_ID && process.env.SES_SECRET_ACCESS_KEY);
+}
+
 function emailConfigured(): boolean {
-  return Boolean(process.env.RESEND_API_KEY);
+  return sesConfigured() || Boolean(process.env.RESEND_API_KEY);
 }
 
 /** SMS goes out when the full Twilio triple is present. */
@@ -275,6 +283,46 @@ function e164(rawContact: string): string {
   const digits = rawContact.replace(/\D/g, "");
   if (rawContact.trim().startsWith("+")) return `+${digits}`;
   return digits.length === 10 ? `+1${digits}` : `+${digits}`;
+}
+
+/**
+ * Send over Amazon SES (SESv2 SendEmail). The client is constructed per call
+ * with explicit credentials; the SDK import stays lazy so the function bundle
+ * only pays for it when SES is actually configured.
+ */
+async function sendViaSes(rawContact: string, code: string): Promise<DeliveryResult> {
+  const from = process.env.OTP_EMAIL_FROM || "DataBoard <code@send.taiku.live>";
+  try {
+    const { SESv2Client, SendEmailCommand } = await import("@aws-sdk/client-sesv2");
+    const client = new SESv2Client({
+      region: process.env.SES_REGION || "us-west-2",
+      credentials: {
+        accessKeyId: process.env.SES_ACCESS_KEY_ID!,
+        secretAccessKey: process.env.SES_SECRET_ACCESS_KEY!,
+      },
+    });
+    await client.send(
+      new SendEmailCommand({
+        FromEmailAddress: from,
+        Destination: { ToAddresses: [rawContact] },
+        Content: {
+          Simple: {
+            Subject: { Data: "Your DataBoard code" },
+            Body: {
+              Text: {
+                Data: `${code} is your DataBoard verification code. It expires in ${EXPIRY_MINUTES} minutes. Ignore this email if you did not request it.`,
+              },
+            },
+          },
+        },
+      }),
+    );
+    return { delivered: true, transport: "email" };
+  } catch (err) {
+    const name = err instanceof Error ? err.name : "unknown";
+    console.warn(`otp: ses delivery failed, ${name}`);
+    return { delivered: false, transport: "none", failure: "provider_error" };
+  }
 }
 
 /** POST https://api.resend.com/emails. From address must be a verified domain. */
@@ -377,6 +425,7 @@ export async function deliverCode(
     };
   }
 
+  if (sesConfigured()) return sendViaSes(rawContact, code);
   if (emailConfigured()) return sendViaResend(rawContact, code);
   if (capture) return { delivered: true, transport: "test" };
   return {

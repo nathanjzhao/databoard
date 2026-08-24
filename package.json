@@ -16,6 +16,7 @@
     "restore": "node scripts/restore.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1116.0",
     "@cloudflare/voprf-ts": "^1.0.0",
     "@libsql/client": "^0.17.4",
     "@noble/curves": "^2.3.0",
