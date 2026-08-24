@@ -9,7 +9,11 @@
     "start": "next start",
     "seed": "npm run gen:schema && node scripts/seed.ts",
     "migrate:buyer-tokens": "npm run gen:schema && node scripts/migrate-buyer-tokens.ts",
-    "reset-db": "node scripts/reset-db.mjs"
+    "grant-operator": "npm run gen:schema && node scripts/grant-operator.ts",
+    "reset-db": "node scripts/reset-db.mjs",
+    "backup": "node scripts/backup.ts",
+    "backup:prod": "node scripts/backup.ts --prod",
+    "restore": "node scripts/restore.ts"
   },
   "dependencies": {
     "@cloudflare/voprf-ts": "^1.0.0",

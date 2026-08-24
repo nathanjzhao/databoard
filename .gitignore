@@ -43,6 +43,9 @@ next-env.d.ts
 # blind tender: the sqlite database and its WAL sidecars
 /data/
 
+# blind tender: database dumps (password hashes + pseudonymous content, private)
+/backups/
+
 # blind tender: generated from db/schema.sql before dev/build/seed
 /lib/schema.generated.ts
 
@@ -51,3 +54,6 @@ next-env.d.ts
 /test-results/
 /playwright-report/
 *.local
+
+# hardening spec: distDirs of the extra dev servers it spawns
+/.next-test-*/
