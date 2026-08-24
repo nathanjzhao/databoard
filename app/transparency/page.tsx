@@ -225,6 +225,9 @@ export default async function TransparencyPage() {
                     short public list of plausible labs offline and recognize
                     their tokens. The protocol guarantees the server never
                     receives a name, not that a small dictionary is large.
+                    And one residue no system removes: what you write in an
+                    ask is public and yours. A description specific enough to
+                    identify your company identifies it under any handle.
                   </p>
                 </div>
               </li>
