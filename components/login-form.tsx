@@ -1,7 +1,6 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { deriveIdentityKeys } from "@/lib/e2ee";
 import { saveKeys } from "@/components/messages/keystore";
@@ -37,7 +36,6 @@ async function establishEncryptionKeys(username: string, password: string) {
 }
 
 export function LoginForm() {
-  const router = useRouter();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -56,8 +54,10 @@ export function LoginForm() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Sign in failed.");
       await establishEncryptionKeys(username.trim().toLowerCase(), password);
-      router.refresh();
-      router.push("/");
+      // Hard navigation: a session just began, so every cached RSC payload is
+      // stale. router.refresh() + push() race each other here (the push can
+      // win and render the board logged-out from the router cache).
+      window.location.assign("/");
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);

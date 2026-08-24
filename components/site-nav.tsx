@@ -6,7 +6,7 @@
  */
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 
 export type NavUser = { username: string } | null;
@@ -31,7 +31,6 @@ function isActive(pathname: string, href: string): boolean {
 
 export function SiteNav({ user }: { user: NavUser }) {
   const pathname = usePathname() ?? "/";
-  const router = useRouter();
   const [signingOut, setSigningOut] = useState(false);
   const matchesBadge = useNavBadge("/api/matches/badge", Boolean(user), pathname);
   const dealsBadge = useNavBadge("/api/deals/badge", Boolean(user), pathname);
@@ -47,9 +46,8 @@ export function SiteNav({ user }: { user: NavUser }) {
   async function signOut() {
     setSigningOut(true);
     await fetch("/api/auth/logout", { method: "POST" });
-    router.refresh();
-    router.push("/gate");
-    setSigningOut(false);
+    // Hard navigation across the session boundary; see login-form.tsx.
+    window.location.assign("/gate");
   }
 
   return (
