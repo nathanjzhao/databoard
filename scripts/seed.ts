@@ -13,6 +13,9 @@
  */
 
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { closeDb, getDb, now } from "../lib/db.ts";
 import { createUser } from "../lib/auth.ts";
 import { newId, normalizeContact } from "../lib/crypto.ts";
@@ -389,6 +392,8 @@ async function main() {
 
   // Idempotent: clear all rows (children first), then reinsert.
   for (const table of [
+    "hidden_asks",
+    "operators",
     "deal_participants",
     "deals",
     "messages",
@@ -425,6 +430,19 @@ async function main() {
       args: [created.user.id, keys.publicKey, now()],
     });
     console.log(`user  @${created.user.username} (${created.user.accountType})`);
+  }
+
+  // One seeded operator, so /admin and the hide controls are testable
+  // locally out of the box. Granted through the REAL grant path (the
+  // command-line script is the only writer to the operators table), run as
+  // the child process it is in production use.
+  {
+    const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
+    execFileSync(
+      process.execPath,
+      [path.join(scriptsDir, "grant-operator.ts"), "quiet-ledger"],
+      { cwd: path.dirname(scriptsDir), stdio: "inherit" },
+    );
   }
 
   const day = 24 * 60 * 60 * 1000;

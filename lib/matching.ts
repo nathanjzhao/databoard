@@ -19,6 +19,9 @@
  *
  * Nothing in this module handles a buyer name, a contact, or any other raw
  * identifier. It reads tokens the compose path already minted.
+ *
+ * Moderated asks (rows in hidden_asks) do not exist to matching, on either
+ * side of the table: they neither appear as matches nor anchor them.
  */
 
 import { getDb, now } from "./db.ts";
@@ -83,7 +86,10 @@ export async function findBuyerMatches(userId: string): Promise<BuyerMatchGroup[
             JOIN users u ON u.id = o.user_id
            WHERE o.user_id <> ?
              AND o.status <> 'closed'
-             AND o.buyer_token IN (SELECT buyer_token FROM asks WHERE user_id = ?)
+             AND o.id NOT IN (SELECT ask_id FROM hidden_asks)
+             AND o.buyer_token IN (SELECT buyer_token FROM asks
+                                    WHERE user_id = ?
+                                      AND id NOT IN (SELECT ask_id FROM hidden_asks))
            ORDER BY o.created_at DESC`,
     args: [userId, userId],
   });
@@ -125,6 +131,7 @@ export async function findBuyerMatches(userId: string): Promise<BuyerMatchGroup[
                  buyer_is_other, created_at
             FROM asks
            WHERE user_id = ?
+             AND id NOT IN (SELECT ask_id FROM hidden_asks)
            ORDER BY created_at DESC`,
     args: [userId],
   });
@@ -155,7 +162,10 @@ export async function countMatchedAsks(userId: string): Promise<number> {
             FROM asks o
            WHERE o.user_id <> ?
              AND o.status <> 'closed'
-             AND o.buyer_token IN (SELECT buyer_token FROM asks WHERE user_id = ?)`,
+             AND o.id NOT IN (SELECT ask_id FROM hidden_asks)
+             AND o.buyer_token IN (SELECT buyer_token FROM asks
+                                    WHERE user_id = ?
+                                      AND id NOT IN (SELECT ask_id FROM hidden_asks))`,
     args: [userId, userId],
   });
   return Number(rs.rows[0]?.n ?? 0);

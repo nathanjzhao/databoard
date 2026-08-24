@@ -17,8 +17,11 @@ import { timeAgo } from "@/components/ask/format";
 import { CollabPanel } from "@/components/ask/collab-button";
 import { DealPeople, type DealPerson } from "@/components/ask/deal-people";
 import { OwnerControls } from "@/components/ask/owner-controls";
+import { HideControl } from "@/components/admin/hide-control";
+import { ModerationBanner } from "@/components/admin/moderation-banner";
 import { getSessionUser } from "@/lib/auth";
 import { getDb, isDbConfigured } from "@/lib/db";
+import { getHiddenInfo, isOperator } from "@/lib/moderation";
 import { categoryLabel, unpackTags, type AskStatus } from "@/lib/taxonomy";
 import { buyerChip } from "@/lib/voprf";
 
@@ -100,8 +103,18 @@ export default async function AskDetailPage({
   const mine = ask.user_id === user.id;
   const closed = ask.status === "closed";
 
+  // A hidden ask is a 404 to everyone except its poster (who gets the page
+  // with the reason on it) and operators (who get the same plus unhide).
+  const [hiddenInfo, operator] = await Promise.all([
+    getHiddenInfo(ask.id),
+    isOperator(user.id),
+  ]);
+  if (hiddenInfo && !mine && !operator) notFound();
+
   const sameBuyerRs = await db.execute({
-    sql: `SELECT COUNT(*) AS n FROM asks WHERE buyer_token = ? AND id != ?`,
+    sql: `SELECT COUNT(*) AS n FROM asks
+           WHERE buyer_token = ? AND id != ?
+             AND id NOT IN (SELECT ask_id FROM hidden_asks)`,
     args: [ask.buyer_token, ask.id],
   });
   const sameBuyer = Number(sameBuyerRs.rows[0]?.n ?? 0);
@@ -178,6 +191,14 @@ export default async function AskDetailPage({
       <h1 className="bt-display mt-4 max-w-[26ch] text-[2.25rem] leading-[1.08] text-ink sm:text-[2.75rem]">
         {ask.title}
       </h1>
+
+      {hiddenInfo ? (
+        <ModerationBanner
+          askId={ask.id}
+          reason={hiddenInfo.reason}
+          canUnhide={operator}
+        />
+      ) : null}
 
       <div className="mt-10 grid gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
         {/* --------------------------------------------------- main column */}
@@ -297,6 +318,8 @@ export default async function AskDetailPage({
           )}
 
           <DealPeople askId={ask.id} people={dealPeople} />
+
+          {operator && !hiddenInfo ? <HideControl askId={ask.id} /> : null}
 
           {/* incoming requests, owner only */}
           {mine ? (

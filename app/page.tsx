@@ -55,7 +55,9 @@ function href(cat: string, status: string): string {
 async function loadBoard(cat: string, status: string) {
   const db = await getDb();
 
-  const where: string[] = [];
+  // Moderated asks vanish from the board and from every count on it.
+  const notHidden = "id NOT IN (SELECT ask_id FROM hidden_asks)";
+  const where: string[] = [`a.${notHidden}`];
   const args: string[] = [];
   if (cat) {
     where.push("a.category = ?");
@@ -78,9 +80,9 @@ async function loadBoard(cat: string, status: string) {
              LIMIT 200`,
       args,
     }),
-    db.execute(`SELECT category, COUNT(*) AS n FROM asks GROUP BY category`),
-    db.execute(`SELECT status, COUNT(*) AS n FROM asks GROUP BY status`),
-    db.execute(`SELECT COUNT(DISTINCT buyer_token) AS n FROM asks`),
+    db.execute(`SELECT category, COUNT(*) AS n FROM asks WHERE ${notHidden} GROUP BY category`),
+    db.execute(`SELECT status, COUNT(*) AS n FROM asks WHERE ${notHidden} GROUP BY status`),
+    db.execute(`SELECT COUNT(DISTINCT buyer_token) AS n FROM asks WHERE ${notHidden}`),
   ]);
 
   const asks: AskRow[] = rowsRs.rows.map((r) => ({
