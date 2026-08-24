@@ -249,8 +249,12 @@ export function SignupFlow() {
 
       {step === "code" && issued ? (
         <>
+          {/* Live mode names the destination from CLIENT state only: the
+              contact as typed never comes back from the server. */}
           <p className="mt-3 text-[0.875rem] leading-relaxed text-ink-dim">
-            {issued.blurb}
+            {issued.demo
+              ? issued.blurb
+              : `We sent a code to ${contact}. It expires in 10 minutes.`}
           </p>
 
           {issued.demo && issued.demoCode ? (

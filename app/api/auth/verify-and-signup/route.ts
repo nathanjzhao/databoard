@@ -10,9 +10,18 @@
  * issued against. Then it persists ONLY: username, scrypt(password),
  * account_type, and HMAC(contact). realName and affiliation die with this
  * request. Nothing is logged.
+ *
+ * Rate limit (lib/ratelimit.ts): 10 attempts / 10 min per IP, counted in an
+ * HMAC bucket so the IP is never stored raw.
  */
 
 import { NextResponse } from "next/server";
+import {
+  RATE_LIMITS,
+  checkRateLimit,
+  requestIp,
+  retryPhrase,
+} from "@/lib/ratelimit";
 import { generateHandle, suffixHandle } from "@/lib/handles";
 import { verifyChallenge } from "@/lib/verify";
 import {
@@ -50,6 +59,20 @@ export async function POST(request: Request) {
     body = await request.json();
   } catch {
     return NextResponse.json({ error: "Expected JSON." }, { status: 400 });
+  }
+
+  const limited = await checkRateLimit(RATE_LIMITS.signupPerIp, requestIp(request));
+  if (limited.limited) {
+    return NextResponse.json(
+      {
+        error: `Too many signup attempts. Try again in ${retryPhrase(limited.retryAfterSeconds)}.`,
+        retryAfterSeconds: limited.retryAfterSeconds,
+      },
+      {
+        status: 429,
+        headers: { "retry-after": String(limited.retryAfterSeconds) },
+      },
+    );
   }
 
   const badPassword = passwordProblem(body.password ?? "");

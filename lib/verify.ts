@@ -24,18 +24,24 @@
  *
  * The server therefore holds nothing between step 1 and step 3. The cost is
  * that a challenge is replayable until it expires; the signup route closes
- * that by consuming it into an account (contact_blind_index is UNIQUE) and
- * the window is five minutes.
+ * that by consuming it into an account (contact_blind_index is UNIQUE), the
+ * window is ten minutes, and /api/auth/request-code is rate limited
+ * (lib/ratelimit.ts).
  */
 
+import { appendFileSync, mkdirSync } from "node:fs";
+import path from "node:path";
 import { hmacHex, normalizeContact, detectContactKind, safeEqual } from "./crypto.ts";
 import type { ContactKind } from "./crypto.ts";
 import { INDEPENDENT_AFFILIATION } from "./taxonomy.ts";
 
 export { INDEPENDENT_AFFILIATION };
 
-/** Five minutes. Long enough to paste a code, short enough to not matter. */
-export const CHALLENGE_TTL_MS = 5 * 60 * 1000;
+/** Ten minutes. Long enough for a slow inbox, short enough to not matter. */
+export const CHALLENGE_TTL_MS = 10 * 60 * 1000;
+
+/** The expiry as delivery copy states it. Derived, so it cannot drift. */
+const EXPIRY_MINUTES = Math.round(CHALLENGE_TTL_MS / 60_000);
 
 export type AccountType = "org" | "individual";
 
@@ -197,20 +203,161 @@ export function verifyChallenge(
 
 export type DeliveryResult = {
   delivered: boolean;
-  transport: "demo" | "sms" | "email" | "none";
+  transport: "demo" | "sms" | "email" | "test" | "none";
+  /** Why nothing went out, when transport is "none" in live mode. */
+  failure?: "unconfigured" | "provider_error";
   note?: string;
 };
 
 /**
- * Pluggable delivery stub. In demo mode it does nothing and the UI shows the
- * code. A production build swaps the bodies of the two branches below for a
- * Twilio call and a Resend call. Neither branch may log or store the contact.
+ * THE RULE FOR EVERYTHING BELOW: the contact and the code are never logged
+ * and never stored. On a provider failure the only thing written anywhere is
+ * the provider's name and the HTTP status.
+ */
+
+/** Email goes out when a Resend key is present. */
+function emailConfigured(): boolean {
+  return Boolean(process.env.RESEND_API_KEY);
+}
+
+/** SMS goes out when the full Twilio triple is present. */
+function smsConfigured(): boolean {
+  return Boolean(
+    process.env.TWILIO_ACCOUNT_SID &&
+      process.env.TWILIO_AUTH_TOKEN &&
+      process.env.TWILIO_FROM,
+  );
+}
+
+/**
+ * Which contact kinds can actually receive a code right now. The signup UI
+ * uses this (returned alongside request-code errors) to grey out the phone
+ * path when only email is configured, and vice versa.
+ */
+export function availableContactKinds(): ContactKind[] {
+  if (DEMO_MODE || testCaptureEnabled()) return ["email", "phone"];
+  const kinds: ContactKind[] = [];
+  if (emailConfigured()) kinds.push("email");
+  if (smsConfigured()) kinds.push("phone");
+  return kinds;
+}
+
+/**
+ * TEST TRANSPORT. With OTP_TEST_CAPTURE=1 the code is appended (kind + code
+ * only, never the contact) to data/otp-capture.jsonl so the Playwright specs
+ * can drive NON-demo mode end to end without a provider. Refused outright in
+ * production: this would defeat delivery-based verification.
+ */
+function testCaptureEnabled(): boolean {
+  if (process.env.OTP_TEST_CAPTURE !== "1") return false;
+  if (process.env.VERCEL_ENV === "production") {
+    throw new Error("OTP_TEST_CAPTURE is a test transport. Refusing in production.");
+  }
+  return true;
+}
+
+function captureForTests(kind: ContactKind, code: string): void {
+  const dir = path.join(process.cwd(), "data");
+  mkdirSync(dir, { recursive: true });
+  appendFileSync(
+    path.join(dir, "otp-capture.jsonl"),
+    JSON.stringify({ kind, code }) + "\n",
+    "utf8",
+  );
+}
+
+/**
+ * Twilio wants E.164. A leading "+" is honored as typed; a bare 10-digit
+ * number is assumed US, the same assumption normalizeContact makes for the
+ * blind index; anything longer is taken as already country-coded.
+ */
+function e164(rawContact: string): string {
+  const digits = rawContact.replace(/\D/g, "");
+  if (rawContact.trim().startsWith("+")) return `+${digits}`;
+  return digits.length === 10 ? `+1${digits}` : `+${digits}`;
+}
+
+/** POST https://api.resend.com/emails. From address must be a verified domain. */
+async function sendViaResend(rawContact: string, code: string): Promise<DeliveryResult> {
+  const from = process.env.OTP_EMAIL_FROM || "DataBoard <code@databoard.dev>";
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        from,
+        to: [rawContact],
+        subject: "Your DataBoard code",
+        text: `${code} is your DataBoard verification code. It expires in ${EXPIRY_MINUTES} minutes. Ignore this email if you did not request it.`,
+      }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      console.warn(`otp: resend delivery failed, HTTP ${res.status}`);
+      return { delivered: false, transport: "none", failure: "provider_error" };
+    }
+    return { delivered: true, transport: "email" };
+  } catch {
+    console.warn("otp: resend delivery failed, no response");
+    return { delivered: false, transport: "none", failure: "provider_error" };
+  }
+}
+
+/** POST the Twilio 2010-04-01 Messages endpoint, basic-auth, form-encoded. */
+async function sendViaTwilio(rawContact: string, code: string): Promise<DeliveryResult> {
+  const sid = process.env.TWILIO_ACCOUNT_SID ?? "";
+  const auth = Buffer.from(`${sid}:${process.env.TWILIO_AUTH_TOKEN}`).toString("base64");
+  try {
+    const res = await fetch(
+      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Basic ${auth}`,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          To: e164(rawContact),
+          From: process.env.TWILIO_FROM ?? "",
+          Body: `DataBoard: ${code} is your verification code. It expires in ${EXPIRY_MINUTES} minutes. Ignore this if you did not request it.`,
+        }).toString(),
+        signal: AbortSignal.timeout(10_000),
+      },
+    );
+    if (!res.ok) {
+      console.warn(`otp: twilio delivery failed, HTTP ${res.status}`);
+      return { delivered: false, transport: "none", failure: "provider_error" };
+    }
+    return { delivered: true, transport: "sms" };
+  } catch {
+    console.warn("otp: twilio delivery failed, no response");
+    return { delivered: false, transport: "none", failure: "provider_error" };
+  }
+}
+
+/**
+ * Sends the code, or explains why it cannot.
+ *
+ *   demo mode          -> nothing goes out; the UI shows the code, labeled.
+ *   live + configured  -> Resend for email, Twilio for phone.
+ *   live + capture on  -> the test transport above stands in for a provider.
+ *   live + neither     -> delivered:false with failure "unconfigured"; the
+ *                         route turns that into a 503 naming the capability.
+ *
+ * The contact exists in this function for the length of one provider call
+ * and is never logged or stored, in any branch.
  */
 export async function deliverCode(
   rawContact: string,
   code: string,
   kind: ContactKind,
 ): Promise<DeliveryResult> {
+  const capture = testCaptureEnabled(); // throws rather than run in production
+  if (capture) captureForTests(kind, code);
+
   if (DEMO_MODE) {
     return {
       delivered: false,
@@ -220,17 +367,31 @@ export async function deliverCode(
   }
 
   if (kind === "phone") {
-    // TODO(production): Twilio messages.create({ to: rawContact, body: code })
-    void rawContact;
-    void code;
-    return { delivered: false, transport: "none", note: "SMS transport not configured." };
+    if (smsConfigured()) return sendViaTwilio(rawContact, code);
+    if (capture) return { delivered: true, transport: "test" };
+    return {
+      delivered: false,
+      transport: "none",
+      failure: "unconfigured",
+      note: "SMS delivery is not configured.",
+    };
   }
 
-  // TODO(production): Resend emails.send({ to: rawContact, subject, text: code })
-  return { delivered: false, transport: "none", note: "Email transport not configured." };
+  if (emailConfigured()) return sendViaResend(rawContact, code);
+  if (capture) return { delivered: true, transport: "test" };
+  return {
+    delivered: false,
+    transport: "none",
+    failure: "unconfigured",
+    note: "Email delivery is not configured.",
+  };
 }
 
-/** Human-readable description of where a code went, for the signup UI. */
+/**
+ * Human-readable description of where a code went, for the signup UI.
+ * Deliberately generic in live mode: the server never echoes the contact
+ * back; the client composes "we sent a code to ..." from its own state.
+ */
 export function deliveryBlurb(kind: ContactKind): string {
   if (DEMO_MODE) return "Demo mode: the code appears below instead of being sent.";
   return kind === "phone" ? "We sent a text." : "We sent an email.";
