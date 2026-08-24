@@ -21,6 +21,7 @@
 
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
+import { RATE_LIMITS, checkRateLimit, retryPhrase } from "@/lib/ratelimit";
 import {
   BadEvaluationRequestError,
   evaluateBlindedBuyer,
@@ -28,41 +29,6 @@ import {
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-/* ------------------------------------------------------------ rate limit */
-
-const WINDOW_MS = 60_000;
-const MAX_PER_WINDOW = 30;
-
-/**
- * Sliding-window counter per user, in process memory. Honest caveat: on
- * serverless this is per-instance and resets on cold start, so the real
- * ceiling is MAX_PER_WINDOW times the number of warm instances. It is a
- * throttle on casual probing, not a cryptographic control; the schema keeps
- * no request log to enforce a stricter one with.
- */
-const globalForRate = globalThis as unknown as {
-  __dataBoardVoprfRate?: Map<string, number[]>;
-};
-
-function rateLimited(userId: string): boolean {
-  const now = Date.now();
-  const map = (globalForRate.__dataBoardVoprfRate ??= new Map<string, number[]>());
-  const kept = (map.get(userId) ?? []).filter((t) => now - t < WINDOW_MS);
-  if (kept.length >= MAX_PER_WINDOW) {
-    map.set(userId, kept);
-    return true;
-  }
-  kept.push(now);
-  map.set(userId, kept);
-  // Keep the map from accumulating every user id ever seen.
-  if (map.size > 10_000) {
-    for (const [k, v] of map) {
-      if (v.every((t) => now - t >= WINDOW_MS)) map.delete(k);
-    }
-  }
-  return false;
-}
 
 /* ----------------------------------------------------------------- route */
 
@@ -72,10 +38,23 @@ export async function POST(request: Request) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
 
-  if (rateLimited(user.id)) {
+  // 30 evaluations per minute per user, counted in the shared rate_limits
+  // table (lib/ratelimit.ts), so the ceiling holds across serverless
+  // instances instead of multiplying by the number of warm containers. The
+  // bucket is HMAC(pepper, scope|user id): the table gains counts, not a
+  // request log. Still a throttle on casual probing, not a cryptographic
+  // control; the operator holds the key and needs no oracle.
+  const limited = await checkRateLimit(RATE_LIMITS.voprfPerUser, user.id);
+  if (limited.limited) {
     return NextResponse.json(
-      { error: "Too many blind evaluations. Wait a minute." },
-      { status: 429 },
+      {
+        error: `Too many blind evaluations. Wait ${retryPhrase(limited.retryAfterSeconds)}.`,
+        retryAfterSeconds: limited.retryAfterSeconds,
+      },
+      {
+        status: 429,
+        headers: { "retry-after": String(limited.retryAfterSeconds) },
+      },
     );
   }
 
