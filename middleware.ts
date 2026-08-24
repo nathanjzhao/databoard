@@ -2,9 +2,9 @@
  * middleware.ts
  *
  * The gate. DataBoard is not publicly readable: without a session cookie,
- * only /gate, /login, /signup, /transparency, /api/auth/* and
- * /api/transparency/* (plus Next static assets) are served. Everything else,
- * the board included, redirects to /gate.
+ * only /gate, /login, /signup, /transparency, /terms, /privacy, /api/auth/*
+ * and /api/transparency/* (plus Next static assets) are served. Everything
+ * else, the board included, redirects to /gate.
  *
  * This is deliberately only a COOKIE PRESENCE check. The edge runtime cannot
  * reach the database, so a forged cookie gets a visitor through the redirect
@@ -17,10 +17,18 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { GATE_PATH, SESSION_COOKIE, isPublicPath } from "@/lib/gate";
 
+/**
+ * The legal pages are public for the same reason /transparency is: the terms
+ * and the privacy policy must be readable before anyone hands over anything.
+ */
+const LEGAL_PATHS = new Set(["/terms", "/privacy"]);
+
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
-  if (isPublicPath(pathname)) return NextResponse.next();
+  if (isPublicPath(pathname) || LEGAL_PATHS.has(pathname)) {
+    return NextResponse.next();
+  }
 
   if (!request.cookies.has(SESSION_COOKIE)) {
     const gate = request.nextUrl.clone();

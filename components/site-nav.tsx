@@ -210,6 +210,12 @@ export function SiteFooter({ commitSha }: { commitSha: string | null }) {
         <Link href="/transparency" className="text-blue hover:text-amber">
           Read the schema
         </Link>
+        <Link href="/terms" className="transition-colors hover:text-ink">
+          Terms
+        </Link>
+        <Link href="/privacy" className="transition-colors hover:text-ink">
+          Privacy
+        </Link>
         <a
           href={commitHref}
           target="_blank"
