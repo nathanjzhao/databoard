@@ -29,6 +29,18 @@ const CAN_SEE: ReadonlyArray<readonly [string, string]> = [
     "Evidence hashes",
     "64 hex characters and a label per commitment; fingerprints of documents, not documents",
   ],
+  [
+    "Rate-limit buckets",
+    "keyed HMAC buckets with counts and window starts; the IP, contact or handle behind a bucket is not stored and not recoverable",
+  ],
+  [
+    "Captured server errors",
+    "route paths, error kinds and scrubbed, length-capped messages; no request bodies, headers, cookies, IPs or user attribution",
+  ],
+  [
+    "Moderation state",
+    "which accounts hold the operator flag and which asks are hidden, with the operator-written reason; user ids resolve to handles and nothing else",
+  ],
 ];
 
 const CANNOT_SEE: ReadonlyArray<readonly [string, string]> = [

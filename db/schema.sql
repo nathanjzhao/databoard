@@ -114,6 +114,29 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user    ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 
 -- ---------------------------------------------------------------------------
+-- rate_limits
+--
+-- Request counters behind the auth and VOPRF endpoints (lib/ratelimit.ts).
+-- Fixed windows; each check reads the current window plus the previous one
+-- weighted by how much of it still overlaps a sliding window, so a burst
+-- cannot hide on a window boundary.
+--
+-- No PII here, and no raw limiter keys either: bucket is
+-- HMAC(SERVER_PEPPER, "ratelimit" | scope | key), where key is an IP
+-- address, a normalized contact, a handle, or a user id depending on the
+-- scope. The HMAC is the same construction as contact_blind_index above,
+-- which means this table never stores an IP or a contact in any form, and a
+-- dump of it is counts against opaque hex. Rows expire with their window and
+-- are swept opportunistically during later checks.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS rate_limits (
+  bucket       TEXT    NOT NULL,
+  window_start INTEGER NOT NULL,
+  count        INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (bucket, window_start)
+);
+
+-- ---------------------------------------------------------------------------
 -- asks
 --
 -- The board. One row per RFP-style request for data.
@@ -376,3 +399,86 @@ BEGIN
            WHERE deal_id = NEW.deal_id) + NEW.share_usd
        > (SELECT total_usd FROM deals WHERE id = NEW.deal_id);
 END;
+
+-- ---------------------------------------------------------------------------
+-- ops_errors
+--
+-- Server errors, captured by the Next instrumentation hook (instrumentation.ts
+-- -> lib/ops.ts) so the operator can see that something broke without running
+-- an access log. One row per error, sampled: a digest seen in the last minute
+-- is not written again.
+--
+-- No PII here, enforced at the write site (lib/ops.ts), auditable there:
+--   * route is the request PATHNAME only. The query string is stripped before
+--     the write, and request bodies, headers and cookies are never read by
+--     the capture path at all, so a search term or a token in a URL cannot
+--     end up in this table.
+--   * kind is the router context Next reports (render / route / action /
+--     proxy), a closed vocabulary carrying nothing user-written.
+--   * message and stack are the error text, length-capped, with email-shaped
+--     and long-digit substrings redacted before the write as a second fence:
+--     even an exception that quotes user input does not land here verbatim.
+--   * digest is Next's error digest when present, otherwise a hash of
+--     kind + route + message. It exists for the sampling above and for
+--     grouping, and identifies an ERROR, never a person. There is no user_id
+--     column, no session column, no IP column: a row says what broke, not
+--     who hit it.
+--
+-- Rows are pruned opportunistically after 30 days. Reading this table is
+-- operator-only (/api/admin/errors).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ops_errors (
+  id      TEXT    PRIMARY KEY,
+  at      INTEGER NOT NULL,
+  route   TEXT    NOT NULL,
+  kind    TEXT    NOT NULL,
+  message TEXT    NOT NULL,
+  stack   TEXT    NOT NULL DEFAULT '',
+  digest  TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_ops_errors_at     ON ops_errors(at DESC);
+CREATE INDEX IF NOT EXISTS idx_ops_errors_digest ON ops_errors(digest, at);
+
+-- ---------------------------------------------------------------------------
+-- operators
+--
+-- Who can moderate. One row per account with the operator flag; the flag is
+-- granted from the command line (scripts/grant-operator.ts), never from the
+-- web, so the set of operators can only grow by someone who already holds
+-- database credentials.
+--
+-- No PII here: an operator is a user_id, which resolves to a handle and
+-- nothing else, exactly like every other actor in this schema. Moderation
+-- does not get a name column, an email column, or a notes column, because
+-- moderators do not get to know more about a person than the board does.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS operators (
+  user_id    TEXT    PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  granted_at INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- hidden_asks
+--
+-- Moderation state for an ask: present means hidden. Hiding removes an ask
+-- from the board, from matching and from other members' ask pages; it does
+-- not delete the row, and the poster keeps seeing their own ask with a
+-- banner naming the reason, because being moderated silently is worse than
+-- being moderated.
+--
+-- No PII here:
+--   * hidden_by is the operator's user_id: a handle, nothing more.
+--   * reason is free text WRITTEN BY THE OPERATOR, shown verbatim to the
+--     poster and on /admin. The hide form tells operators not to quote
+--     contact details, names or anything else the schema refuses to store;
+--     a reason is a category of problem ("spam", "solicits off-board
+--     contact"), not a transcript. We cannot make SQL enforce that, so the
+--     rule is stated where the text is typed and here where it lands.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS hidden_asks (
+  ask_id    TEXT    PRIMARY KEY REFERENCES asks(id) ON DELETE CASCADE,
+  hidden_by TEXT    NOT NULL,
+  reason    TEXT    NOT NULL,
+  hidden_at INTEGER NOT NULL
+);
