@@ -61,8 +61,8 @@ const TOKEN_GAPS: ReadonlyArray<readonly [string, string]> = [
     "establishes the legal entity to the escrow agent, with no documented way to attest privately into our token",
   ],
   [
-    "a standard VOPRF (RFC 9497)",
-    "no cure either: whoever can query the evaluator can enumerate the small dictionary of plausible lab names",
+    "the VOPRF we now run (RFC 9497)",
+    "keeps the name off the wire and proves one key answers everyone, but does not bind a payer to the token, and the key holder can still enumerate the small dictionary of plausible lab names",
   ],
 ];
 
@@ -292,11 +292,16 @@ export default function VerificationPage() {
           lede="The honest negative result, and the reason a payer-bound rung is future work rather than a sprint. None of the mechanisms above can produce our buyer token from a hidden payer on its own."
         >
           <p className="max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
-            The buyer token is HMAC(SERVER_PEPPER, buyer name). Against a
-            database dump it is a blind: no pepper, no name. Against the
+            The buyer token is the output of a verifiable OPRF (RFC 9497):
+            your browser blinds the lab name before sending, the server
+            evaluates a point it cannot read, and a DLEQ proof lets your
+            client check that the same server key answers everyone, so the
+            server never receives a name and cannot selectively break or
+            forge matches without your own client catching it. Against a
+            database dump the token is a blind: no key, no name. Against the
             operator it is a pseudonym, not a secret, because the set of
-            plausible AI labs is small enough for the pepper-holder to
-            enumerate; the schema and the main transparency page already say
+            plausible AI labs is small enough for the key-holder to evaluate
+            offline; the schema and the main transparency page already say
             this. The new problem a payer-bound rung adds is harder: someone
             must prove that the entity that actually paid maps to the token
             on the deal, without telling us the entity. Every mechanism on

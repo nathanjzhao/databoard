@@ -13,8 +13,12 @@ const CAN_SEE: ReadonlyArray<readonly [string, string]> = [
     "contact indexes and buyer tokens, as opaque hex with no names attached",
   ],
   [
-    "Message and note text",
-    "stored in the clear; this is not end-to-end encrypted",
+    "Collab notes and legacy message text",
+    "notes on collab requests are plaintext, and threads from before encryption stay readable and are labeled",
+  ],
+  [
+    "Messaging metadata",
+    "who is in which thread, when messages were sent, and thread subjects; encryption covers bodies, not structure",
   ],
   ["Timestamps", "when rows were created, updated, read"],
   [
@@ -32,11 +36,18 @@ const CANNOT_SEE: ReadonlyArray<readonly [string, string]> = [
   ["Email addresses", "same: the address is keyed and dropped at signup"],
   ["Real names", "attested into the signup challenge, never written"],
   ["Org names", "reduced to a single org-or-individual bit"],
-  ["Lab names", "keyed to a buyer token in the posting request, then dropped"],
+  [
+    "Which lab an ask names",
+    "never received: blinded in your browser before send (RFC 9497 VOPRF), the server evaluates an opaque point",
+  ],
   ["Which human owns a username", "nothing stored links the two"],
   [
     "Documents behind evidence hashes",
     "hashed in the participant's browser; the file itself never arrives",
+  ],
+  [
+    "Message text in encrypted threads",
+    "sealed in the sender's browser; the server stores ciphertext and wrapped keys it cannot open",
   ],
 ];
 

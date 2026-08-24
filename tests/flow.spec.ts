@@ -242,7 +242,7 @@ test("01 user A signs up: org account, phone contact, demo code from the UI", as
 
   // Landed logged in: the gated board renders with A's handle in the chrome.
   await page.goto("/");
-  await expect(page).toHaveURL(/:3947\/$/);
+  await expect(page).toHaveURL((u) => u.pathname === "/");
   await expect(page.getByText("Somebody wants your data.")).toBeVisible();
   await expect(page.getByText(`@${USER_A.username}`).first()).toBeVisible();
 });
@@ -415,8 +415,10 @@ test("09 THE PRIVACY CLAIM: no PII string appears in any row of any table", asyn
     "deals",
     "messages",
     "sessions",
+    "thread_keys",
     "thread_participants",
     "threads",
+    "user_e2ee_keys",
     "users",
   ]);
 

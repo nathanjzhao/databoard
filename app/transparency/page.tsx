@@ -21,6 +21,7 @@ import {
   readSchemaSql,
 } from "@/lib/db";
 import { isUsingDevPepper, sha256Hex } from "@/lib/crypto";
+import { getVoprfPublicKeyHex } from "@/app/api/voprf/server";
 import { DEMO_MODE } from "@/lib/verify";
 import { TSection } from "@/components/transparency/section";
 import { SchemaBlock } from "@/components/transparency/schema-block";
@@ -49,6 +50,7 @@ const PII_PATTERNS = [
 ];
 
 const CONTENTS = [
+  ["00", "verify", "Three layers"],
   ["01", "schema", "The schema"],
   ["02", "visibility", "Can and cannot see"],
   ["03", "attestation", "Stateless verification"],
@@ -59,6 +61,13 @@ const CONTENTS = [
 export default async function TransparencyPage() {
   const schema = readSchemaSql();
   const schemaSha = sha256Hex(schema);
+
+  let voprfPubKey: string | null = null;
+  try {
+    voprfPubKey = await getVoprfPublicKeyHex();
+  } catch {
+    // Rendered as unavailable below; /api/voprf/pubkey is the fallback.
+  }
 
   const dbLive = isDbConfigured();
   let columns: TableColumns[] = [];
@@ -103,6 +112,125 @@ export default async function TransparencyPage() {
 
       <div className="mt-10 grid gap-x-10 gap-y-12 lg:grid-cols-[minmax(0,1fr)_300px]">
         <div className="min-w-0 space-y-14">
+          <TSection
+            id="verify"
+            num="00"
+            title="Verify it yourself, in three layers"
+            lede="Trust claims sort into three piles: things you can check right now, things you still take on our word, and the work that moves items from the second pile into the first. Here is the sort, so you know which kind of claim you are reading everywhere else on this page."
+          >
+            <ol className="border border-rule bg-panel">
+              <li className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-2 border-b border-rule px-4 py-4">
+                <span className="bt-token pt-0.5">1</span>
+                <div>
+                  <div className="text-[0.875rem] font-medium text-ink">
+                    Checkable now, by anyone.
+                  </div>
+                  <ul className="mt-2 space-y-2 text-[0.8125rem] leading-relaxed text-ink-dim">
+                    <li>
+                      The code is public at{" "}
+                      <a
+                        href="https://github.com/nathanjzhao/databoard"
+                        className="font-mono text-blue hover:text-amber"
+                      >
+                        github.com/nathanjzhao/databoard
+                      </a>{" "}
+                      and every push runs{" "}
+                      <a
+                        href="https://github.com/nathanjzhao/databoard/actions"
+                        className="text-blue hover:text-amber"
+                      >
+                        public CI
+                      </a>
+                      : typecheck, build, then Playwright suites
+                      (tests/flow.spec.ts, tests/deals.spec.ts) that drive
+                      signup, posting, and deals for real, dump the entire
+                      database, and assert the planted contact, name, and
+                      buyer strings appear nowhere in it.
+                    </li>
+                    <li>
+                      Buyer names are blinded in your browser before they are
+                      sent (RFC 9497 VOPRF). Every mint verifies a DLEQ proof
+                      against the published server key, so your client checks,
+                      cryptographically, that the same key answers everyone;
+                      a server that keyed you differently to break or forge a
+                      match would fail your own client&apos;s verification.
+                      The key, also served at{" "}
+                      <a
+                        href="/api/voprf/pubkey"
+                        className="font-mono text-blue hover:text-amber"
+                      >
+                        /api/voprf/pubkey
+                      </a>
+                      :
+                      <span className="mt-1 block break-all font-mono text-[0.6875rem] text-amber">
+                        {voprfPubKey ??
+                          "unavailable right now; the endpoint above is authoritative"}
+                      </span>
+                    </li>
+                    <li>
+                      Message text in encrypted threads is sealed in the
+                      sender&apos;s browser and stored as ciphertext plus
+                      per-participant wrapped keys. Ciphertext-only storage
+                      means a database dump, an operator query, or a subpoena
+                      of the database yields no message text, with the
+                      boundary stated in section 03.
+                    </li>
+                    <li>
+                      The schema in section 01 and the same bytes at{" "}
+                      <a
+                        href="/api/transparency/schema"
+                        className="font-mono text-blue hover:text-amber"
+                      >
+                        /api/transparency/schema
+                      </a>{" "}
+                      show every column that exists; the rail on the right
+                      reads the live database to confirm the running schema is
+                      the published one.
+                    </li>
+                  </ul>
+                </div>
+              </li>
+              <li className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-2 border-b border-rule px-4 py-4">
+                <span className="bt-token pt-0.5">2</span>
+                <div>
+                  <div className="text-[0.875rem] font-medium text-ink">
+                    Still taken on our word.
+                  </div>
+                  <p className="mt-1 text-[0.8125rem] leading-relaxed text-ink-dim">
+                    That the deployed code matches the commit stamped in the
+                    footer: Vercel builds from the repo, but a malicious
+                    deploy could stamp one commit and run another. That the
+                    signup contact passing through memory is not logged on the
+                    way. That the JavaScript served to your browser is the
+                    repo&apos;s JavaScript. Layer 1 makes lying here
+                    detectable in the code; it does not yet make it
+                    impossible at runtime.
+                  </p>
+                </div>
+              </li>
+              <li className="grid grid-cols-[2.5rem_minmax(0,1fr)] gap-x-2 px-4 py-4">
+                <span className="bt-token pt-0.5">3</span>
+                <div>
+                  <div className="text-[0.875rem] font-medium text-ink">
+                    Shrinking the gap.
+                  </div>
+                  <p className="mt-1 text-[0.8125rem] leading-relaxed text-ink-dim">
+                    Future work, named so the residue in layer 2 is a roadmap
+                    rather than a shrug: TEE attestation, so the pepper and
+                    the OPRF key exist only inside measured hardware and the
+                    running code proves its own identity; and JS delivery
+                    verification in the browser, the problem WhatsApp&apos;s
+                    Code Verify addresses. One residue no blinding removes:
+                    the operator holding the OPRF key can still evaluate the
+                    short public list of plausible labs offline and recognize
+                    their tokens. The protocol guarantees the server never
+                    receives a name, not that a small dictionary is large.
+                  </p>
+                </div>
+              </li>
+            </ol>
+          </TSection>
+
           <TSection
             id="schema"
             num="01"
@@ -210,18 +338,26 @@ export default async function TransparencyPage() {
                   make.
                 </p>
               </div>
-              <div className="border-l-2 border-red bg-red-wash px-4 py-3.5">
-                <div className="bt-label text-red">
-                  Messages are readable by the operator
+              <div className="border-l-2 border-amber bg-amber-wash px-4 py-3.5">
+                <div className="bt-label text-amber">
+                  Messages: ciphertext on the server, with named caveats
                 </div>
                 <p className="mt-2 max-w-[62ch] text-[0.8438rem] leading-relaxed text-ink-dim">
-                  Thread text is stored in the clear. It is not end-to-end
-                  encrypted, and we are not going to imply otherwise. What the
-                  operator cannot do is tie a thread back to a phone number or
-                  an inbox, because neither was ever collected. Practical
-                  advice, printed where the lawyers can see it: negotiate here,
-                  and move genuinely sensitive specifics, exact figures,
-                  samples, contracts, off-platform to channels you control.
+                  Thread text is end-to-end encrypted. Your browser seals each
+                  message with a per-thread key, that key is wrapped for every
+                  participant against public keys their own passwords derive,
+                  and the server stores ciphertext plus wrapped keys it cannot
+                  open. Encrypted threads refuse plaintext writes outright.
+                  What this does not hide, said plainly: who talks to whom and
+                  when, thread subjects, collab-request notes, and messages
+                  from before encryption existed, which stay readable and are
+                  labeled in the UI. The guarantee is against the database,
+                  not the code path: an operator serving tampered JavaScript
+                  could still capture keys in the browser, which is why the
+                  code is public and CI builds from the repo you can read.
+                  The standing advice stands: negotiate here, move genuinely
+                  sensitive specifics, exact figures, samples, contracts,
+                  off-platform to channels you control.
                 </p>
               </div>
             </div>

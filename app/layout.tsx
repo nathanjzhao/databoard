@@ -25,7 +25,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       <body className="flex min-h-full flex-col bg-bg text-ink">
         <SiteNav user={user ? { username: user.username } : null} />
         <main className="flex-1">{children}</main>
-        <SiteFooter />
+        <SiteFooter commitSha={process.env.VERCEL_GIT_COMMIT_SHA ?? null} />
       </body>
     </html>
   );

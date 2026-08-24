@@ -190,9 +190,18 @@ function useNavBadge(url: string, signedIn: boolean, pathname: string): number {
   return badge;
 }
 
-export function SiteFooter() {
+/**
+ * commitSha is threaded in from app/layout.tsx (a server component), because
+ * VERCEL_GIT_COMMIT_SHA is a server-side env var and this file is client
+ * code. The stamp links the running deployment to the exact tree it was
+ * built from; /transparency explains what that does and does not prove.
+ */
+export function SiteFooter({ commitSha }: { commitSha: string | null }) {
   const pathname = usePathname() ?? "/";
   if (pathname === "/gate") return null;
+  const commitHref = commitSha
+    ? `https://github.com/nathanjzhao/databoard/tree/${commitSha}`
+    : "https://github.com/nathanjzhao/databoard";
   return (
     <footer className="mt-auto border-t border-rule">
       <div className="mx-auto flex max-w-[1180px] flex-wrap items-center gap-x-6 gap-y-2 px-5 py-6 text-[0.75rem] text-ink-faint">
@@ -203,6 +212,15 @@ export function SiteFooter() {
         <Link href="/transparency" className="text-blue hover:text-amber">
           Read the schema
         </Link>
+        <a
+          href={commitHref}
+          target="_blank"
+          rel="noreferrer"
+          className="ml-auto font-mono text-[0.6875rem] text-ink-faint transition-colors hover:text-amber"
+          title="The commit this deployment was built from"
+        >
+          running {commitSha ? commitSha.slice(0, 7) : "dev"}
+        </a>
       </div>
     </footer>
   );

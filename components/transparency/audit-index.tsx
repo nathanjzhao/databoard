@@ -34,8 +34,12 @@ const CLAIMS: ReadonlyArray<{
     files: ["lib/crypto.ts (normalizeContact, contactBlindIndex)"],
   },
   {
-    claim: "Buyer names are keyed to a token and dropped",
-    files: ["lib/crypto.ts (buyerToken, buyerLabel)", "lib/buyers.ts"],
+    claim: "Buyer names are blinded in the browser, never sent",
+    files: [
+      "lib/voprf.ts (mintBuyerTokenV2)",
+      "app/api/voprf/server.ts (evaluateBlindedBuyer)",
+      "lib/buyers.ts",
+    ],
   },
   {
     claim: "Sessions store a hash of the token, not the token",

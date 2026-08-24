@@ -12,7 +12,12 @@ import { defineConfig } from "@playwright/test";
  *
  * Serial by construction: the tests share accounts and board state, so one
  * worker, no parallelism, no retries (a retry against a dirty DB would lie).
+ *
+ * PW_PORT overrides the port (default 3947) when a dev server is already
+ * running elsewhere; webServer reuses it instead of starting a second one.
  */
+const PORT = Number(process.env.PW_PORT ?? 3947);
+
 export default defineConfig({
   testDir: "./tests",
   timeout: 90_000,
@@ -22,14 +27,14 @@ export default defineConfig({
   retries: 0,
   reporter: [["list"]],
   use: {
-    baseURL: "http://localhost:3947",
+    baseURL: `http://localhost:${PORT}`,
     viewport: { width: 1280, height: 900 },
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "npm run dev",
-    url: "http://localhost:3947/gate",
+    command: PORT === 3947 ? "npm run dev" : `npx next dev --port ${PORT}`,
+    url: `http://localhost:${PORT}/gate`,
     reuseExistingServer: true,
     timeout: 60_000,
   },

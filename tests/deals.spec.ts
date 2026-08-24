@@ -891,8 +891,10 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     "deals",
     "messages",
     "sessions",
+    "thread_keys",
     "thread_participants",
     "threads",
+    "user_e2ee_keys",
     "users",
   ]);
 
@@ -935,15 +937,16 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     );
   }
 
-  // Buyer blinding on deals: the token is 64 hex chars, identical to the
-  // token the seeded Anthropic ask minted in a different process, and the
-  // name itself appears nowhere (asserted by the scan above).
+  // Buyer blinding on deals: the token is a v2 OPRF token ("v2:" + 128 hex,
+  // RFC 9497 VOPRF output), identical to the token the seeded Anthropic ask
+  // minted in a different process, and the name itself appears nowhere
+  // (asserted by the scan above).
   const dealRs = await client.execute({
     sql: `SELECT buyer_token FROM deals WHERE id = ?`,
     args: [deal1Id],
   });
   const dealToken = String(dealRs.rows[0]?.buyer_token ?? "");
-  expect(dealToken).toMatch(/^[0-9a-f]{64}$/);
+  expect(dealToken).toMatch(/^v2:[0-9a-f]{128}$/);
   const askRs = await client.execute({
     sql: `SELECT buyer_token FROM asks WHERE title = ?`,
     args: ["Contested-topic preference pairs, expert-rated"],
