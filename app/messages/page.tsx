@@ -21,7 +21,8 @@ const EYEBROW = "Messages";
 const TITLE = "Talk without swapping contact details.";
 const BLURB =
   "Threads open when a collab request is accepted or a deal room forms; " +
-  "nothing here ties anyone to a phone number or an inbox.";
+  "messages are end-to-end encrypted, and nothing here ties anyone to a " +
+  "phone number or an inbox.";
 
 export default async function MessagesPage({
   searchParams,
@@ -48,7 +49,7 @@ export default async function MessagesPage({
 
   return (
     <PageStub eyebrow={EYEBROW} title={TITLE} blurb={BLURB}>
-      <ThreadList initial={threads} />
+      <ThreadList initial={threads} viewer={user.username} />
     </PageStub>
   );
 }

@@ -43,7 +43,7 @@ export default async function ThreadPage({
 
   return (
     <div className="mx-auto w-full max-w-[860px] px-5 py-10">
-      <ThreadView initial={thread} />
+      <ThreadView initial={thread} viewer={user.username} />
     </div>
   );
 }

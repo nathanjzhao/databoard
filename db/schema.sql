@@ -11,9 +11,13 @@
 -- not hashed-with-a-known-salt, not "temporarily". The columns simply do not
 -- exist. If you want to audit that, there is nothing to read but this file.
 --
--- Three things are one-way keyed (see lib/crypto.ts):
+-- Three things are one-way transformed (see lib/crypto.ts, lib/voprf.ts):
 --   contact_blind_index  HMAC(SERVER_PEPPER, normalized phone or email)
---   buyer_token          HMAC(SERVER_PEPPER, normalized buyer name)
+--   buyer_token          "v2:" + RFC 9497 VOPRF output, minted BLIND in the
+--                        poster's browser: the server evaluates a blinded
+--                        point and never receives the name in any form.
+--                        Rows from before the blind protocol hold the old
+--                        HMAC(SERVER_PEPPER, normalized name) tokens.
 --   password_hash        scrypt(password)
 --
 -- Real names and affiliations are ATTESTED at signup, not stored: they are
@@ -49,6 +53,10 @@
 --     contact to reset against. Lose the password, lose the account. The
 --     signup page says so before you commit.
 --   * username is chosen by the user and is the only identity the board sees.
+--   * Encryption public keys live in user_e2ee_keys below, not in a column
+--     here, because this schema is applied with CREATE ... IF NOT EXISTS
+--     only: a new column on an existing table would silently not exist on a
+--     database created before it. New tables are the honest additive path.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
   id                  TEXT    PRIMARY KEY,
@@ -57,6 +65,31 @@ CREATE TABLE IF NOT EXISTS users (
   account_type        TEXT    NOT NULL CHECK (account_type IN ('org', 'individual')),
   contact_blind_index TEXT    NOT NULL UNIQUE,
   created_at          INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- user_e2ee_keys
+--
+-- One X25519 PUBLIC key per account, for end-to-end encrypted messaging.
+-- PUBLIC key material only, never a secret: the browser derives an X25519
+-- keypair from the user's password with scrypt (lib/e2ee.ts), uploads the
+-- public half at signup, and recomputes the private half at login into
+-- memory that never leaves the device. The server cannot reconstruct the
+-- private key from this row: that would require inverting scrypt over the
+-- password, which is the same thing password_hash already makes hard.
+--
+-- The row is write-once: the first key registered for an account stays. A
+-- swapped public key would let whoever swapped it read future thread keys,
+-- so the API refuses overwrites, and a mismatch between this key and the one
+-- a user's password derives is loud in the client, not silent.
+--
+-- No row = the account predates end-to-end encryption and has not signed in
+-- since. Threads with such a participant stay plaintext and say so in the UI.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_e2ee_keys (
+  user_id    TEXT    PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  pubkey     TEXT    NOT NULL,   -- base64url X25519 public key, 32 bytes
+  created_at INTEGER NOT NULL
 );
 
 -- ---------------------------------------------------------------------------
@@ -86,11 +119,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 -- The board. One row per RFP-style request for data.
 --
 -- No PII here:
---   * buyer_token is HMAC(SERVER_PEPPER, normalized_buyer_name). The lab name
---     itself is received over the wire, keyed, and dropped on the floor in the
---     same request handler. It is never logged and never persisted. The UI
---     shows "Buyer #" plus the first four hex characters, which is enough to
---     see that two asks point at the same buyer and not enough to say who.
+--   * buyer_token ("v2:" prefix) is an RFC 9497 VOPRF output the poster's
+--     BROWSER computed: the name was blinded client-side, evaluated by the
+--     server without being seen, proof-checked, and unblinded into this
+--     token. The name never crosses the wire in any form. Legacy rows
+--     (no prefix) predate that and were HMAC-keyed server-side from a name
+--     that was received once and dropped. The UI shows "Buyer #" plus four
+--     hex characters, which is enough to see that two asks point at the
+--     same buyer and not enough to say who.
 --   * buyer_is_other is 1 when the poster typed a name that was not in the
 --     known-buyer dropdown. It is a single bit and it exists so the board can
 --     be honest that a token may be off-list. It leaks nothing about the name.
@@ -189,14 +225,54 @@ CREATE TABLE IF NOT EXISTS thread_participants (
 CREATE INDEX IF NOT EXISTS idx_participants_user ON thread_participants(user_id);
 
 -- ---------------------------------------------------------------------------
+-- thread_keys
+--
+-- End-to-end encryption for a thread: one wrapped copy of the thread's
+-- random 32-byte message key per participant. The key is generated in the
+-- FIRST participant's browser to open the thread, wrapped for every seat
+-- with X25519 ECDH against each participant's registered public key
+-- (user_e2ee_keys) plus a fresh ephemeral keypair, and uploaded here. The
+-- server relays wrapped bytes it cannot open: unwrapping takes a private
+-- key that only ever exists in a participant's browser.
+--
+-- Rows for a thread are written once, all seats in one transaction, and
+-- never updated: replacing a wrap is how an operator would mount a key
+-- substitution, so the API refuses it. A thread with no rows here is a
+-- plaintext thread (it predates encryption, or a participant has no
+-- registered key) and the UI labels it as such.
+--
+-- Honest limits, stated where they can be audited: the operator still sees
+-- WHO talks to whom and when (threads, participants, timestamps, subjects
+-- are not encrypted), and a tampered client script could exfiltrate keys.
+-- The ciphertext guarantee holds against the database, not against serving
+-- malicious JavaScript; /transparency spells this out.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS thread_keys (
+  thread_id   TEXT    NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  user_id     TEXT    NOT NULL REFERENCES users(id)   ON DELETE CASCADE,
+  wrapped_key TEXT    NOT NULL,   -- base64url: 12-byte nonce || AES-GCM(thread key)
+  eph_pubkey  TEXT    NOT NULL,   -- base64url X25519 ephemeral public key for this wrap
+  created_at  INTEGER NOT NULL,
+  PRIMARY KEY (thread_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_thread_keys_user ON thread_keys(user_id);
+
+-- ---------------------------------------------------------------------------
 -- messages
 --
--- The message body, in the clear, on the server. Say so plainly: this is not
--- end-to-end encrypted. The operator can read your messages. What the operator
--- cannot do is tie the thread back to a phone number or an inbox, because
--- neither was ever collected.
+-- The message body. In a thread with thread_keys rows the body is an
+-- end-to-end encrypted envelope (version tag, nonce, AES-256-GCM ciphertext,
+-- base64url) sealed in the sender's browser with the thread key; the server
+-- enforces that such threads only accept envelope-shaped bodies and stores
+-- ciphertext it cannot read. In a thread without thread_keys rows the body
+-- is plaintext, in the clear, readable by the operator, and the UI says so
+-- on every such thread. Messages written before encryption existed stay as
+-- plaintext rows, labeled honestly, rather than being rewritten.
 --
--- No PII here beyond what a sender chooses to type. sender_id is a user_id.
+-- Metadata is not encrypted either way: sender_id, thread_id and created_at
+-- are visible to the operator. What the operator cannot do is tie any of it
+-- back to a phone number or an inbox, because neither was ever collected.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS messages (
   id         TEXT    PRIMARY KEY,
@@ -217,9 +293,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(thread_id, created_at
 -- deal_participants, one row per person, the reporter included.
 --
 -- No PII here:
---   * buyer_token is the same keyed hash the asks table uses:
---     HMAC(SERVER_PEPPER, normalized buyer name). The name crossed the wire
---     once, was keyed, and was dropped in the same request handler.
+--   * buyer_token is the same blinded token the asks table uses: minted in
+--     the reporter's browser via the VOPRF, so the name never crossed the
+--     wire (legacy unprefixed rows were HMAC-keyed server-side).
 --     buyer_is_other is the same single honesty bit as on asks.
 --   * total_usd is an EXACT dollar figure stored in the clear. Read that
 --     twice: deal amounts are not blinded, not banded, and the operator can

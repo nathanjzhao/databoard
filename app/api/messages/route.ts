@@ -1,9 +1,11 @@
 /**
  * POST /api/messages
  *
- * Appends one plain-text message to a thread the sender participates in.
- * Sending to a thread you are not in gets the same 404 as a thread that
- * does not exist.
+ * Appends one message to a thread the sender participates in. In an
+ * encrypted thread the body must be a sealed envelope (lib/e2ee.ts); the
+ * server refuses plaintext there, so ciphertext-only storage is enforced,
+ * not promised. Sending to a thread you are not in gets the same 404 as a
+ * thread that does not exist.
  *
  * Body:  { threadId, body }
  * Reply: { message: WireMessage }
@@ -47,6 +49,11 @@ export async function POST(request: Request) {
         case "too_long":
           return NextResponse.json(
             { error: `Messages max out at ${MAX_MESSAGE_LENGTH} characters.` },
+            { status: 400 },
+          );
+        case "encryption_required":
+          return NextResponse.json(
+            { error: "This thread is end-to-end encrypted; plaintext is refused." },
             { status: 400 },
           );
       }

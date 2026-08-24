@@ -1,0 +1,362 @@
+/**
+ * lib/e2ee.ts
+ *
+ * End-to-end encryption for messages: every primitive in one isomorphic
+ * module. It runs unchanged in the browser (thread views, signup, login),
+ * under plain node (scripts/seed.ts encrypts the demo threads with this
+ * exact code), and on the server (which only ever calls the shape check,
+ * because the server holds no keys and can open nothing).
+ *
+ * The design, in full:
+ *
+ *   Identity keys.  An X25519 keypair derived CLIENT-SIDE from the user's
+ *   password: seed = scrypt(password, "databoard-e2ee-v1:" + username,
+ *   N=2^15, r=8, p=1, 32 bytes), private key = clamp(seed), public key =
+ *   X25519 base point mult. The public half is uploaded once at signup and
+ *   is write-once server-side. The private half is recomputed at login and
+ *   lives in sessionStorage for the tab, never sent anywhere. Passwords are
+ *   unchangeable here (no recovery exists), so the derivation is stable for
+ *   the life of the account. The server's password_hash uses scrypt with a
+ *   random per-user salt (lib/crypto.ts), a disjoint salt domain, so the
+ *   two derivations can never produce related output.
+ *
+ *   Thread keys.  A random 32-byte AES-256-GCM key per thread, generated in
+ *   the first participant's browser to open the thread, then wrapped for
+ *   every participant crypto_box-style: fresh ephemeral X25519 keypair,
+ *   shared = X25519(eph_priv, recipient_pub), wrap key = HKDF-SHA256(shared,
+ *   salt="databoard-e2ee-v1/wrap", info=eph_pub || recipient_pub, 32), then
+ *   AES-256-GCM over the thread key with a random 12-byte nonce and
+ *   AAD "databoard-e2ee-v1/key/" + threadId (so a wrap cannot be replayed
+ *   into a different thread).
+ *
+ *   Messages.  AES-256-GCM under the thread key, random 12-byte nonce, AAD
+ *   "databoard-e2ee-v1/msg/" + threadId. The stored body is the envelope
+ *   "e2ee-v1-" + b64url(nonce) + b64url(ciphertext): one string in the
+ *   base64url alphabet, parsed by position (the nonce is always 16 chars).
+ *
+ * AES-GCM comes from WebCrypto (globalThis.crypto.subtle), which exists in
+ * every browser and in node 20+, so the only dependencies are @noble/curves
+ * and @noble/hashes, both audited and zero-dependency.
+ *
+ * Honest limits, so nobody reads more into this than it does:
+ *   - Metadata is not encrypted: who talks to whom, when, and thread
+ *     subjects are visible to the operator.
+ *   - No forward secrecy: the keys are deterministic from the password, so
+ *     anyone who learns the password derives the same private key. That is
+ *     the deliberate trade for accounts with no recovery channel; it is
+ *     also what makes a second device work at all.
+ *   - The guarantee is against the database, not against the code path: an
+ *     operator serving tampered JavaScript could exfiltrate keys (the
+ *     WhatsApp / Code Verify problem). Open code and public CI make that
+ *     tampering detectable, not impossible.
+ */
+
+import { x25519 } from "@noble/curves/ed25519.js";
+import { scryptAsync } from "@noble/hashes/scrypt.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+
+/* ------------------------------------------------------------- constants */
+
+export const E2EE_VERSION = "e2ee-v1";
+
+const IDENTITY_SALT_PREFIX = "databoard-e2ee-v1:";
+const WRAP_HKDF_SALT = "databoard-e2ee-v1/wrap";
+const KEY_AAD_PREFIX = "databoard-e2ee-v1/key/";
+const MSG_AAD_PREFIX = "databoard-e2ee-v1/msg/";
+
+const SCRYPT_N = 2 ** 15; // deliberately not the server's params or salt
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
+
+const NONCE_BYTES = 12; // AES-GCM standard nonce; 16 base64url chars
+const ENVELOPE_PREFIX = `${E2EE_VERSION}-`; // "e2ee-v1-"
+const NONCE_B64_LEN = 16;
+
+/**
+ * Strict envelope shape: prefix, 16 base64url chars of nonce, then at least
+ * a GCM tag plus one byte of ciphertext. Everything after the prefix is in
+ * the base64url alphabet on purpose, no inner separators: the whole stored
+ * body stays a single opaque token, and the proof suites' PII scanners
+ * treat it as the random bytes it is.
+ */
+const ENVELOPE_RE = /^e2ee-v1-[A-Za-z0-9_-]{39,}$/;
+
+/** Public keys are 32 bytes = 43 base64url chars; wraps are 12 + 32 + 16 bytes = 80 chars. */
+export const PUBKEY_B64_LEN = 43;
+export const WRAPPED_KEY_B64_LEN = 80;
+
+/* --------------------------------------------------------------- base64url */
+
+const B64_ALPHABET =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+const B64_LOOKUP: Record<string, number> = {};
+for (let i = 0; i < B64_ALPHABET.length; i++) B64_LOOKUP[B64_ALPHABET[i]] = i;
+
+/** Uint8Array -> base64url, no padding. Hand-rolled so browser and node agree. */
+export function toB64url(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i];
+    const b = i + 1 < bytes.length ? bytes[i + 1] : 0;
+    const c = i + 2 < bytes.length ? bytes[i + 2] : 0;
+    out += B64_ALPHABET[a >> 2];
+    out += B64_ALPHABET[((a & 3) << 4) | (b >> 4)];
+    if (i + 1 < bytes.length) out += B64_ALPHABET[((b & 15) << 2) | (c >> 6)];
+    if (i + 2 < bytes.length) out += B64_ALPHABET[c & 63];
+  }
+  return out;
+}
+
+/** base64url -> Uint8Array. Returns null on any character or length problem. */
+export function fromB64url(s: string): Uint8Array | null {
+  if (typeof s !== "string" || s.length % 4 === 1) return null;
+  const len = Math.floor((s.length * 3) / 4);
+  const out = new Uint8Array(len);
+  let buffer = 0;
+  let bits = 0;
+  let j = 0;
+  for (const ch of s) {
+    const v = B64_LOOKUP[ch];
+    if (v === undefined) return null;
+    buffer = (buffer << 6) | v;
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      out[j++] = (buffer >> bits) & 0xff;
+    }
+  }
+  return out;
+}
+
+/* ---------------------------------------------------------------- helpers */
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+function utf8(s: string): Uint8Array {
+  return textEncoder.encode(s);
+}
+
+function concatBytes(...arrays: Uint8Array[]): Uint8Array {
+  const total = arrays.reduce((n, a) => n + a.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const a of arrays) {
+    out.set(a, off);
+    off += a.length;
+  }
+  return out;
+}
+
+function randomBytes(n: number): Uint8Array {
+  const out = new Uint8Array(n);
+  globalThis.crypto.getRandomValues(out);
+  return out;
+}
+
+async function aesKey(raw: Uint8Array): Promise<CryptoKey> {
+  return globalThis.crypto.subtle.importKey(
+    "raw",
+    raw as unknown as BufferSource,
+    "AES-GCM",
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+async function aesSeal(
+  keyBytes: Uint8Array,
+  nonce: Uint8Array,
+  plaintext: Uint8Array,
+  aad: Uint8Array,
+): Promise<Uint8Array> {
+  const key = await aesKey(keyBytes);
+  const ct = await globalThis.crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv: nonce as unknown as BufferSource,
+      additionalData: aad as unknown as BufferSource,
+    },
+    key,
+    plaintext as unknown as BufferSource,
+  );
+  return new Uint8Array(ct);
+}
+
+/** Returns null on any authentication failure instead of throwing. */
+async function aesOpen(
+  keyBytes: Uint8Array,
+  nonce: Uint8Array,
+  ciphertext: Uint8Array,
+  aad: Uint8Array,
+): Promise<Uint8Array | null> {
+  try {
+    const key = await aesKey(keyBytes);
+    const pt = await globalThis.crypto.subtle.decrypt(
+      {
+        name: "AES-GCM",
+        iv: nonce as unknown as BufferSource,
+        additionalData: aad as unknown as BufferSource,
+      },
+      key,
+      ciphertext as unknown as BufferSource,
+    );
+    return new Uint8Array(pt);
+  } catch {
+    return null;
+  }
+}
+
+/* --------------------------------------------------------- identity keys */
+
+export type IdentityKeys = {
+  /** base64url X25519 public key: uploaded at signup, stored server-side. */
+  publicKey: string;
+  /** Raw private scalar: stays in this device's memory or sessionStorage. */
+  secretKey: Uint8Array;
+};
+
+/**
+ * The one derivation. Same password + same username = same keypair, on any
+ * device, forever, which is exactly the property an account with no
+ * password changes and no recovery can honestly offer. The salt domain
+ * ("databoard-e2ee-v1:" + username) shares nothing with the server-side
+ * password hash, whose salt is 16 random bytes per user.
+ */
+export async function deriveIdentityKeys(
+  username: string,
+  password: string,
+): Promise<IdentityKeys> {
+  const seed = await scryptAsync(
+    utf8(password),
+    utf8(IDENTITY_SALT_PREFIX + username),
+    { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, dkLen: 32 },
+  );
+  // getPublicKey clamps the scalar per RFC 7748 before the base point mult.
+  const publicKey = x25519.getPublicKey(seed);
+  return { publicKey: toB64url(publicKey), secretKey: seed };
+}
+
+/* ------------------------------------------------------------ thread keys */
+
+/** A fresh random 32-byte AES-256-GCM key for one thread. */
+export function generateThreadKey(): Uint8Array {
+  return randomBytes(32);
+}
+
+export type WrappedKey = {
+  /** base64url: 12-byte nonce || AES-GCM ciphertext of the thread key. */
+  wrappedKey: string;
+  /** base64url X25519 ephemeral public key minted for this one wrap. */
+  ephPubkey: string;
+};
+
+function wrapKdf(
+  shared: Uint8Array,
+  ephPub: Uint8Array,
+  recipientPub: Uint8Array,
+): Uint8Array {
+  return hkdf(
+    sha256,
+    shared,
+    utf8(WRAP_HKDF_SALT),
+    concatBytes(ephPub, recipientPub),
+    32,
+  );
+}
+
+/**
+ * Wrap a thread key for one recipient, crypto_box-style. The AAD binds the
+ * wrap to its thread so the server cannot re-serve it under another thread.
+ */
+export async function wrapThreadKey(
+  threadKey: Uint8Array,
+  recipientPubkeyB64: string,
+  threadId: string,
+): Promise<WrappedKey | null> {
+  const recipientPub = fromB64url(recipientPubkeyB64);
+  if (!recipientPub || recipientPub.length !== 32) return null;
+  try {
+    const ephSecret = x25519.utils.randomSecretKey();
+    const ephPub = x25519.getPublicKey(ephSecret);
+    const shared = x25519.getSharedSecret(ephSecret, recipientPub);
+    const wrapKey = wrapKdf(shared, ephPub, recipientPub);
+    const nonce = randomBytes(NONCE_BYTES);
+    const ct = await aesSeal(wrapKey, nonce, threadKey, utf8(KEY_AAD_PREFIX + threadId));
+    return {
+      wrappedKey: toB64url(concatBytes(nonce, ct)),
+      ephPubkey: toB64url(ephPub),
+    };
+  } catch {
+    return null; // low-order point or other curve refusal
+  }
+}
+
+/** Unwrap with the recipient's private key. Null on any failure, never throws. */
+export async function unwrapThreadKey(
+  wrappedKeyB64: string,
+  ephPubkeyB64: string,
+  mySecretKey: Uint8Array,
+  threadId: string,
+): Promise<Uint8Array | null> {
+  const wrapped = fromB64url(wrappedKeyB64);
+  const ephPub = fromB64url(ephPubkeyB64);
+  if (!wrapped || wrapped.length <= NONCE_BYTES + 16) return null;
+  if (!ephPub || ephPub.length !== 32) return null;
+  try {
+    const myPub = x25519.getPublicKey(mySecretKey);
+    const shared = x25519.getSharedSecret(mySecretKey, ephPub);
+    const wrapKey = wrapKdf(shared, ephPub, myPub);
+    const nonce = wrapped.slice(0, NONCE_BYTES);
+    const ct = wrapped.slice(NONCE_BYTES);
+    const key = await aesOpen(wrapKey, nonce, ct, utf8(KEY_AAD_PREFIX + threadId));
+    return key && key.length === 32 ? key : null;
+  } catch {
+    return null;
+  }
+}
+
+/* --------------------------------------------------------------- messages */
+
+/**
+ * Seal one message body into the stored envelope. The AAD ties the
+ * ciphertext to its thread: a message row copied into another thread's
+ * history fails authentication instead of decrypting.
+ */
+export async function sealMessage(
+  threadKey: Uint8Array,
+  threadId: string,
+  text: string,
+): Promise<string> {
+  const nonce = randomBytes(NONCE_BYTES);
+  const ct = await aesSeal(threadKey, nonce, utf8(text), utf8(MSG_AAD_PREFIX + threadId));
+  return ENVELOPE_PREFIX + toB64url(nonce) + toB64url(ct);
+}
+
+/** Open one envelope. Null on tampering, wrong key, or wrong thread. */
+export async function openMessage(
+  threadKey: Uint8Array,
+  threadId: string,
+  envelope: string,
+): Promise<string | null> {
+  if (!isEnvelope(envelope)) return null;
+  const body = envelope.slice(ENVELOPE_PREFIX.length);
+  const nonce = fromB64url(body.slice(0, NONCE_B64_LEN));
+  const ct = fromB64url(body.slice(NONCE_B64_LEN));
+  if (!nonce || nonce.length !== NONCE_BYTES || !ct || ct.length < 17) return null;
+  const pt = await aesOpen(threadKey, nonce, ct, utf8(MSG_AAD_PREFIX + threadId));
+  return pt === null ? null : textDecoder.decode(pt);
+}
+
+/**
+ * Is this stored body an encrypted envelope? The server uses this to refuse
+ * plaintext writes into encrypted threads; clients use it to route a body
+ * to decryption or straight to render. Strict on purpose: prefix, exact
+ * alphabet, minimum length. A human would have to type 39+ base64url
+ * characters behind the exact version tag to spoof it, and the worst that
+ * mistype earns is a "could not decrypt" label on their own message.
+ */
+export function isEnvelope(body: string): boolean {
+  return ENVELOPE_RE.test(body);
+}

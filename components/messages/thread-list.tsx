@@ -5,6 +5,13 @@
  * a light poll: no websockets, just a fetch every few seconds while the tab
  * is visible. The unread dot is per-viewer state (thread_participants.
  * last_read_at) and nothing else; the other side never sees a receipt.
+ *
+ * Preview lines for encrypted threads arrive as ciphertext and are
+ * decrypted HERE, in the browser: each row carries the viewer's wrapped
+ * thread key, the tab's password-derived private key unwraps it, and the
+ * last message opens locally. Until that happens (or when the tab holds no
+ * key), the row shows an "Encrypted message" placeholder, which is exactly
+ * what the server sees all the time.
  */
 
 import Link from "next/link";
@@ -12,11 +19,28 @@ import { useEffect, useState } from "react";
 import type { ThreadSummary } from "./types";
 import { participantsLine, relTime } from "./format";
 import { DealRoomTag } from "./deal-room-tag";
+import { loadKeys, type UnlockedKeys } from "./keystore";
+import { isEnvelope, openMessage, unwrapThreadKey } from "@/lib/e2ee";
 
 const POLL_MS = 5000;
+const PREVIEW_PLACEHOLDER = "Encrypted message";
 
-export function ThreadList({ initial }: { initial: ThreadSummary[] }) {
+type PreviewCache = Record<string, { body: string; text: string | null }>;
+
+export function ThreadList({
+  initial,
+  viewer,
+}: {
+  initial: ThreadSummary[];
+  viewer: string;
+}) {
   const [threads, setThreads] = useState<ThreadSummary[]>(initial);
+  const [keys, setKeys] = useState<UnlockedKeys | null>(null);
+  const [previews, setPreviews] = useState<PreviewCache>({});
+
+  useEffect(() => {
+    setKeys(loadKeys(viewer));
+  }, [viewer]);
 
   useEffect(() => {
     let stopped = false;
@@ -38,21 +62,72 @@ export function ThreadList({ initial }: { initial: ThreadSummary[] }) {
     };
   }, []);
 
+  // Decrypt encrypted preview lines this tab has the keys for.
+  useEffect(() => {
+    if (!keys) return;
+    const pending = threads.filter(
+      (t) =>
+        t.lastBody !== null &&
+        isEnvelope(t.lastBody) &&
+        t.wrappedKey !== null &&
+        t.ephPubkey !== null &&
+        previews[t.id]?.body !== t.lastBody,
+    );
+    if (pending.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const additions: PreviewCache = {};
+      for (const t of pending) {
+        const threadKey = await unwrapThreadKey(
+          t.wrappedKey!,
+          t.ephPubkey!,
+          keys.secretKey,
+          t.id,
+        );
+        const text = threadKey
+          ? await openMessage(threadKey, t.id, t.lastBody!)
+          : null;
+        additions[t.id] = { body: t.lastBody!, text };
+      }
+      if (!cancelled) setPreviews((prev) => ({ ...prev, ...additions }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [keys, threads, previews]);
+
   if (threads.length === 0) return <EmptyState />;
 
   return (
     <div className="bt-panel divide-y divide-rule">
       {threads.map((t) => (
-        <ThreadRow key={t.id} thread={t} />
+        <ThreadRow
+          key={t.id}
+          thread={t}
+          preview={
+            t.lastBody !== null && isEnvelope(t.lastBody)
+              ? (previews[t.id]?.body === t.lastBody
+                  ? previews[t.id].text
+                  : null) ?? PREVIEW_PLACEHOLDER
+              : t.lastBody
+          }
+        />
       ))}
     </div>
   );
 }
 
-function ThreadRow({ thread: t }: { thread: ThreadSummary }) {
+function ThreadRow({
+  thread: t,
+  preview,
+}: {
+  thread: ThreadSummary;
+  preview: string | null;
+}) {
   const title = t.subject || t.askTitle || "Untitled thread";
   const showRe = Boolean(t.askTitle && t.askTitle !== t.subject && t.subject);
   const withLine = participantsLine(t.others);
+  const previewIsPlaceholder = preview === PREVIEW_PLACEHOLDER;
 
   return (
     <Link
@@ -84,13 +159,18 @@ function ThreadRow({ thread: t }: { thread: ThreadSummary }) {
         >
           {title}
         </span>
-        <span className="mt-0.5 block truncate text-[0.8125rem] text-ink-faint">
-          {t.lastBody ? (
+        <span
+          className={[
+            "mt-0.5 block truncate text-[0.8125rem]",
+            previewIsPlaceholder ? "text-ink-ghost italic" : "text-ink-faint",
+          ].join(" ")}
+        >
+          {preview ? (
             <>
-              {t.lastSender ? (
+              {t.lastSender && !previewIsPlaceholder ? (
                 <span className="font-mono text-[0.75rem]">@{t.lastSender}: </span>
               ) : null}
-              {t.lastBody}
+              {preview}
             </>
           ) : (
             "No messages yet. Someone has to go first."

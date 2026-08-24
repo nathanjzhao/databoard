@@ -3,9 +3,10 @@
  *
  * Demo data, created through the REAL code paths: users via createUser() (so
  * password hashing and contact blind-indexing behave exactly as signup does)
- * and asks via buyerToken() (so the blind buyer tokens on the board are the
- * same ones the compose form would mint, and equal names collide the way
- * they should).
+ * and asks via serverMintBuyerTokenV2() (the same RFC 9497 OPRF the compose
+ * form drives blind from the browser; a PRF is a function, so the tokens
+ * seeded here are byte-identical to the ones the form would mint, and equal
+ * names collide the way they should).
  *
  * Run with: npm run seed        (plain node, type stripping, no bundler)
  * Every demo account's password is "demo-demo-demo".
@@ -14,7 +15,9 @@
 import { createHash } from "node:crypto";
 import { closeDb, getDb, now } from "../lib/db.ts";
 import { createUser } from "../lib/auth.ts";
-import { buyerToken, newId, normalizeContact } from "../lib/crypto.ts";
+import { newId, normalizeContact } from "../lib/crypto.ts";
+import { buyerChip } from "../lib/voprf.ts";
+import { serverMintBuyerTokenV2 } from "../app/api/voprf/server.ts";
 import { isKnownBuyer } from "../lib/buyers.ts";
 import { packTags } from "../lib/taxonomy.ts";
 import {
@@ -24,6 +27,13 @@ import {
   declineDealShare,
 } from "../lib/deals.ts";
 import { appendMessage } from "../app/api/threads/store.ts";
+import {
+  deriveIdentityKeys,
+  generateThreadKey,
+  sealMessage,
+  wrapThreadKey,
+  type IdentityKeys,
+} from "../lib/e2ee.ts";
 
 const DEMO_PASSWORD = "demo-demo-demo";
 
@@ -382,17 +392,20 @@ async function main() {
     "deal_participants",
     "deals",
     "messages",
+    "thread_keys",
     "thread_participants",
     "threads",
     "collab_requests",
     "asks",
     "sessions",
+    "user_e2ee_keys",
     "users",
   ]) {
     await db.execute(`DELETE FROM ${table}`);
   }
 
   const userIds = new Map<string, string>();
+  const userKeys = new Map<string, IdentityKeys>();
   for (const u of USERS) {
     const created = await createUser(
       u.username,
@@ -402,13 +415,22 @@ async function main() {
     );
     if (!created.ok) throw new Error(`seed user ${u.username}: ${created.error}`);
     userIds.set(u.username, created.user.id);
+    // The same client-side derivation the signup page runs (lib/e2ee.ts),
+    // so signing in as a demo user in a real browser derives the private
+    // key that opens the threads seeded below.
+    const keys = await deriveIdentityKeys(u.username, DEMO_PASSWORD);
+    userKeys.set(u.username, keys);
+    await db.execute({
+      sql: `INSERT INTO user_e2ee_keys (user_id, pubkey, created_at) VALUES (?, ?, ?)`,
+      args: [created.user.id, keys.publicKey, now()],
+    });
     console.log(`user  @${created.user.username} (${created.user.accountType})`);
   }
 
   const day = 24 * 60 * 60 * 1000;
   const askIds: string[] = [];
   for (const a of ASKS) {
-    const token = buyerToken(a.buyer); // the name dies right here, same as prod
+    const token = await serverMintBuyerTokenV2(a.buyer); // the name dies right here
     const askId = newId("ask");
     askIds.push(askId);
     await db.execute({
@@ -432,12 +454,12 @@ async function main() {
         now() - a.ageDays * day,
       ],
     });
-    console.log(`ask   ${a.title.slice(0, 56)} -> Buyer #${token.slice(0, 4)}`);
+    console.log(`ask   ${a.title.slice(0, 56)} -> Buyer #${buyerChip(token)}`);
   }
 
   for (const d of DEALS) {
     const reporterId = userIds.get(d.reporter)!;
-    const token = buyerToken(d.buyer); // same rule as asks: keyed, then gone
+    const token = await serverMintBuyerTokenV2(d.buyer); // same rule as asks
     const created = await createDeal(reporterId, d.reporter, {
       buyerToken: token,
       buyerIsOther: !isKnownBuyer(d.buyer),
@@ -452,10 +474,37 @@ async function main() {
     });
     if (!created.ok) throw new Error(`seed deal (${d.reporter}): ${created.error}`);
 
-    for (const m of d.roomMessages) {
-      if (!created.threadId) break;
-      const sent = await appendMessage(created.threadId, userIds.get(m.from)!, m.body);
-      if (!sent.ok) throw new Error(`seed deal-room message: ${sent.error}`);
+    // End-to-end encrypt the deal room exactly the way a browser does it:
+    // random thread key, wrapped for every seat against each demo user's
+    // password-derived public key, then every message sealed BEFORE it
+    // reaches appendMessage, which by now refuses plaintext in this thread.
+    if (created.threadId) {
+      const threadKey = generateThreadKey();
+      const seats = [d.reporter, ...d.participants.map((p) => p.username)];
+      for (const username of seats) {
+        const wrapped = await wrapThreadKey(
+          threadKey,
+          userKeys.get(username)!.publicKey,
+          created.threadId,
+        );
+        if (!wrapped) throw new Error(`seed thread-key wrap for @${username} failed`);
+        await db.execute({
+          sql: `INSERT INTO thread_keys (thread_id, user_id, wrapped_key, eph_pubkey, created_at)
+                VALUES (?, ?, ?, ?, ?)`,
+          args: [
+            created.threadId,
+            userIds.get(username)!,
+            wrapped.wrappedKey,
+            wrapped.ephPubkey,
+            now(),
+          ],
+        });
+      }
+      for (const m of d.roomMessages) {
+        const sealed = await sealMessage(threadKey, created.threadId, m.body);
+        const sent = await appendMessage(created.threadId, userIds.get(m.from)!, sealed);
+        if (!sent.ok) throw new Error(`seed deal-room message: ${sent.error}`);
+      }
     }
 
     for (const p of d.participants) {
@@ -481,13 +530,85 @@ async function main() {
 
     await backdateDeal(db, created.dealId, created.threadId, d.ageDays);
     console.log(
-      `deal  $${d.totalUsd.toLocaleString("en-US")} -> Buyer #${token.slice(0, 4)}, ` +
+      `deal  $${d.totalUsd.toLocaleString("en-US")} -> Buyer #${buyerChip(token)}, ` +
         `${d.participants.length} named, reported by @${d.reporter}`,
     );
   }
 
+  // One PRE-E2EE thread, kept deliberately. @attic-lantern is an account
+  // from before message encryption shipped and has not signed in since, so
+  // it has no user_e2ee_keys row; a thread seating it cannot be encrypted
+  // and the UI labels it "not end-to-end encrypted". Created the way such
+  // threads really came to exist: an accepted collab on quiet-ledger's
+  // merged-PR ask, messages appended through the same store the routes use
+  // (which accepts plaintext exactly because this thread has no keys).
+  {
+    const legacy = await createUser(
+      "attic-lantern",
+      DEMO_PASSWORD,
+      "individual",
+      normalizeContact("seed-attic-lantern@example.com"),
+    );
+    if (!legacy.ok) throw new Error(`seed user attic-lantern: ${legacy.error}`);
+    const legacyId = legacy.user.id;
+    const askId = askIds[6]; // "Merged-PR triplets from private monorepos"
+    const ownerId = userIds.get("quiet-ledger")!;
+    const threadId = newId("thr");
+    const t = now() - 40 * day;
+    await db.execute({
+      sql: `INSERT INTO collab_requests (id, ask_id, requester_id, note, status, created_at)
+            VALUES (?, ?, ?, ?, 'accepted', ?)`,
+      args: [
+        newId("clb"),
+        askId,
+        legacyId,
+        "Sitting on review-thread exports from two retired monorepos. Happy to compare license chains.",
+        t,
+      ],
+    });
+    await db.execute({
+      sql: `INSERT INTO threads (id, ask_id, subject, created_at, last_message_at)
+            VALUES (?, ?, ?, ?, ?)`,
+      args: [threadId, askId, "Merged-PR triplets from private monorepos", t, t],
+    });
+    for (const uid of [ownerId, legacyId]) {
+      await db.execute({
+        sql: `INSERT INTO thread_participants (thread_id, user_id, joined_at, last_read_at)
+              VALUES (?, ?, ?, ?)`,
+        args: [threadId, uid, t, t],
+      });
+    }
+    const legacyMessages: { from: string; body: string }[] = [
+      {
+        from: "attic-lantern",
+        body: "License chains are documented for both archives. Which review-thread format do you ingest?",
+      },
+      {
+        from: "quiet-ledger",
+        body: "Plain diff plus threaded comments works. Send a five-item sample when ready.",
+      },
+    ];
+    for (const m of legacyMessages) {
+      const sent = await appendMessage(
+        threadId,
+        m.from === "quiet-ledger" ? ownerId : legacyId,
+        m.body,
+      );
+      if (!sent.ok) throw new Error(`seed legacy message: ${sent.error}`);
+    }
+    await db.execute({
+      sql: `UPDATE threads SET created_at = ?, last_message_at = ? WHERE id = ?`,
+      args: [t, t, threadId],
+    });
+    await db.execute({
+      sql: `UPDATE messages SET created_at = ? WHERE thread_id = ?`,
+      args: [t, threadId],
+    });
+    console.log(`thread legacy pre-E2EE plaintext room for @attic-lantern (no e2ee key)`);
+  }
+
   console.log(
-    `\nseeded ${USERS.length} users, ${ASKS.length} asks and ${DEALS.length} deals. ` +
+    `\nseeded ${USERS.length + 1} users, ${ASKS.length} asks and ${DEALS.length} deals. ` +
       `Sign in as any of them with password "${DEMO_PASSWORD}".`,
   );
   closeDb();

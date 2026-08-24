@@ -3,6 +3,38 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { deriveIdentityKeys } from "@/lib/e2ee";
+import { saveKeys } from "@/components/messages/keystore";
+
+/**
+ * After the server accepts the password, the browser re-derives the E2EE
+ * keypair from it (lib/e2ee.ts) and keeps the private half in
+ * sessionStorage for this tab; nothing derived here is ever sent. Accounts
+ * from before end-to-end encryption get their PUBLIC key registered on this
+ * login, which is what upgrades their future threads to encrypted. The
+ * registration is write-once server-side, so a differing stored key is
+ * never overwritten; threads will say so loudly instead.
+ */
+async function establishEncryptionKeys(username: string, password: string) {
+  try {
+    const keys = await deriveIdentityKeys(username, password);
+    const res = await fetch("/api/e2ee/pubkey", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pubkey: keys.publicKey }),
+    });
+    const data = (await res.json().catch(() => ({}))) as { pubkey?: string };
+    saveKeys({ username, publicKey: keys.publicKey, secretKey: keys.secretKey });
+    if (res.ok && data.pubkey && data.pubkey !== keys.publicKey) {
+      console.warn(
+        "e2ee: the registered public key differs from the derived one; encrypted threads will flag this",
+      );
+    }
+  } catch {
+    // No keys this tab, threads show their locked state. Signing in again
+    // retries; the account itself is unaffected.
+  }
+}
 
 export function LoginForm() {
   const router = useRouter();
@@ -23,6 +55,7 @@ export function LoginForm() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Sign in failed.");
+      await establishEncryptionKeys(username.trim().toLowerCase(), password);
       router.refresh();
       router.push("/");
     } catch (err) {

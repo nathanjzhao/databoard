@@ -15,6 +15,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { INDEPENDENT_AFFILIATION } from "@/lib/taxonomy";
+import { deriveIdentityKeys } from "@/lib/e2ee";
+import { saveKeys } from "@/components/messages/keystore";
 
 type Step = "identity" | "code" | "credentials" | "done";
 
@@ -109,6 +111,25 @@ export function SignupFlow() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Signup failed.");
       setFinalUsername(data.username);
+      // End-to-end encryption setup, before the password leaves memory: the
+      // browser derives an X25519 keypair from it (lib/e2ee.ts), registers
+      // the PUBLIC half, and keeps the private half in sessionStorage for
+      // this tab. The password and the private key are never sent.
+      try {
+        const keys = await deriveIdentityKeys(String(data.username), password);
+        await fetch("/api/e2ee/pubkey", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ pubkey: keys.publicKey }),
+        });
+        saveKeys({
+          username: String(data.username),
+          publicKey: keys.publicKey,
+          secretKey: keys.secretKey,
+        });
+      } catch {
+        // Registration retries on the next login; signup itself stands.
+      }
       // Nothing below survives on the server; drop it here too.
       setContact("");
       setRealName("");
