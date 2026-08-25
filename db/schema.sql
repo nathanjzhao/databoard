@@ -184,6 +184,38 @@ CREATE INDEX IF NOT EXISTS idx_asks_buyer    ON asks(buyer_token);
 CREATE INDEX IF NOT EXISTS idx_asks_user     ON asks(user_id);
 
 -- ---------------------------------------------------------------------------
+-- ask_mandates
+--
+-- An optional commitment pinning an ask to one mandate document: the RFP,
+-- MSA or buyer email thread the poster says the ask answers to. The document
+-- is hashed with SHA-256 in the poster's OWN BROWSER; only the 64-hex
+-- fingerprint and a short label arrive here. Same construction as
+-- deal_participants.evidence_hash: there is no upload path, so this table
+-- cannot contain the document.
+--
+-- One mandate per ask, WRITE-ONCE: the primary key holds it to one row, and
+-- the API refuses a second commit rather than replacing the first, because a
+-- swappable hash pins nothing. committed_at is displayed next to the ask's
+-- created_at everywhere the mandate shows, so a commitment added late is
+-- visibly late rather than quietly backdated.
+--
+-- What a row proves: consistency. The poster fixed one document before (or
+-- visibly after) anyone engaged, and a counterparty later shown a document
+-- that does not hash to doc_hash has receipts. What it does not prove:
+-- authenticity or authority. The poster can hash any file they like, and the
+-- UI never says "verified"; the mark is "mandate committed".
+--
+-- No PII here: doc_hash is opaque hex, label is a short caption the poster
+-- wrote (same free-text caveat as everything else they type).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ask_mandates (
+  ask_id       TEXT    PRIMARY KEY REFERENCES asks(id) ON DELETE CASCADE,
+  doc_hash     TEXT    NOT NULL,
+  label        TEXT    NOT NULL DEFAULT '',
+  committed_at INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- collab_requests
 --
 -- Someone reading an ask says "I have some of that". One row per person per

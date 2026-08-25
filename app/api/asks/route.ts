@@ -12,6 +12,13 @@
  * outright rather than quietly accepted, so the old behavior cannot be
  * resurrected by an old client. Everything else is stored as typed, which
  * the compose form says out loud.
+ *
+ * Optionally the body carries mandate: { docHash, label }, the SHA-256 of
+ * the mandate document computed in the poster's browser (the document itself
+ * never arrives). Committed here, it lands in ask_mandates in the same
+ * transaction as the ask, stamped with the same timestamp, so the ask page
+ * can honestly say "committed with the post". Later commits go through
+ * POST /api/asks/[id]/mandate and wear their own, later, timestamp.
  */
 
 import { NextResponse } from "next/server";
@@ -19,6 +26,7 @@ import { getSessionUser } from "@/lib/auth";
 import { DbNotConfiguredError, getDb, now } from "@/lib/db";
 import { newId } from "@/lib/crypto";
 import { isBuyerTokenV2 } from "@/lib/voprf";
+import { mandateProblem, normalizeMandateHash, type MandateInput } from "@/lib/mandates";
 import { CATEGORIES, MODALITIES, PRICE_BANDS, packTags } from "@/lib/taxonomy";
 import { clampPct, statusForPct } from "@/components/ask/format";
 
@@ -43,6 +51,7 @@ type Body = {
   supplyFilledPct?: number;
   buyerTokenV2?: string;
   buyerIsOther?: boolean;
+  mandate?: MandateInput | null;
 };
 
 function problem(body: Body): string | null {
@@ -85,6 +94,12 @@ function problem(body: Body): string | null {
     return "Say whether the buyer was off-list.";
   }
 
+  if (body.mandate != null) {
+    if (typeof body.mandate !== "object") return "Mandate must be an object.";
+    const bad = mandateProblem(body.mandate);
+    if (bad) return bad;
+  }
+
   return null;
 }
 
@@ -111,30 +126,49 @@ export async function POST(request: Request) {
 
   const pct = clampPct(body.supplyFilledPct ?? 0);
   const id = newId("ask");
+  const t = now();
 
   try {
     const db = await getDb();
-    await db.execute({
-      sql: `INSERT INTO asks
-              (id, user_id, title, category, description, modality_tags, volume,
-               price_band, supply_filled_pct, buyer_token, buyer_is_other, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      args: [
-        id,
-        user.id,
-        (body.title ?? "").trim(),
-        body.category ?? "",
-        (body.description ?? "").trim(),
-        packTags(body.modalityTags ?? []),
-        (body.volume ?? "").trim(),
-        body.priceBand ?? "",
-        pct,
-        token,
-        buyerIsOther,
-        statusForPct(pct),
-        now(),
-      ],
-    });
+    const statements = [
+      {
+        sql: `INSERT INTO asks
+                (id, user_id, title, category, description, modality_tags, volume,
+                 price_band, supply_filled_pct, buyer_token, buyer_is_other, status, created_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [
+          id,
+          user.id,
+          (body.title ?? "").trim(),
+          body.category ?? "",
+          (body.description ?? "").trim(),
+          packTags(body.modalityTags ?? []),
+          (body.volume ?? "").trim(),
+          body.priceBand ?? "",
+          pct,
+          token,
+          buyerIsOther,
+          statusForPct(pct),
+          t,
+        ],
+      },
+    ];
+    if (body.mandate != null) {
+      // Same timestamp as the ask row: committed with the post, and the ask
+      // page's honesty line can say exactly that. problem() already
+      // validated the shape.
+      statements.push({
+        sql: `INSERT INTO ask_mandates (ask_id, doc_hash, label, committed_at)
+              VALUES (?, ?, ?, ?)`,
+        args: [
+          id,
+          normalizeMandateHash(body.mandate.docHash ?? "") ?? "",
+          (body.mandate.label ?? "").trim(),
+          t,
+        ] as (string | number)[],
+      });
+    }
+    await db.batch(statements, "write");
   } catch (err) {
     if (err instanceof DbNotConfiguredError) {
       return NextResponse.json({ error: err.message }, { status: 503 });
