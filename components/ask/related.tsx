@@ -154,7 +154,10 @@ function RelatedList({
   nowMs: number;
 }) {
   return (
-    <div className="border border-rule bg-panel">
+    // min-w-0: the titles inside are nowrap-truncated, and without an
+    // explicit minimum the grid track refuses to shrink below their full
+    // width, which scrolls the whole page sideways on phones.
+    <div className="min-w-0 border border-rule bg-panel">
       <div className="border-b border-rule px-4 py-2.5">
         <span className="font-mono text-[0.625rem] uppercase tracking-[0.1em] text-ink-faint">
           {heading}

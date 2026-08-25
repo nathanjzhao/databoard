@@ -27,6 +27,7 @@
 import { getDb, now } from "./db.ts";
 import { newId } from "./crypto.ts";
 import { unpackTags, type AskStatus } from "./taxonomy.ts";
+import { isExclusivity, type Exclusivity } from "./terms.ts";
 
 /* ------------------------------------------------------------- matching */
 
@@ -45,6 +46,8 @@ export type MatchedAsk = {
   createdAt: number;
   posterId: string;
   posterUsername: string;
+  /** Stated terms (ask_terms); null for asks that predate them. */
+  exclusivity: Exclusivity | null;
 };
 
 /** The viewer's own ask, reduced to what the comparison needs. */
@@ -55,6 +58,8 @@ export type OwnAsk = {
   supplyFilledPct: number;
   buyerIsOther: boolean;
   createdAt: number;
+  /** Stated terms (ask_terms); null for asks that predate them. */
+  exclusivity: Exclusivity | null;
 };
 
 /** Everything the board knows about one shared buyer token. */
@@ -81,9 +86,11 @@ export async function findBuyerMatches(userId: string): Promise<BuyerMatchGroup[
     sql: `SELECT o.id, o.title, o.category, o.modality_tags, o.volume,
                  o.price_band, o.supply_filled_pct, o.buyer_token,
                  o.buyer_is_other, o.status, o.created_at,
-                 o.user_id AS poster_id, u.username AS poster_username
+                 o.user_id AS poster_id, u.username AS poster_username,
+                 t.exclusivity
             FROM asks o
             JOIN users u ON u.id = o.user_id
+            LEFT JOIN ask_terms t ON t.ask_id = o.id
            WHERE o.user_id <> ?
              AND o.status <> 'closed'
              AND o.id NOT IN (SELECT ask_id FROM hidden_asks)
@@ -123,16 +130,18 @@ export async function findBuyerMatches(userId: string): Promise<BuyerMatchGroup[
       createdAt: Number(r.created_at),
       posterId: String(r.poster_id),
       posterUsername: String(r.poster_username),
+      exclusivity: isExclusivity(r.exclusivity) ? r.exclusivity : null,
     });
   }
 
   const mine = await db.execute({
-    sql: `SELECT id, title, status, supply_filled_pct, buyer_token,
-                 buyer_is_other, created_at
-            FROM asks
-           WHERE user_id = ?
-             AND id NOT IN (SELECT ask_id FROM hidden_asks)
-           ORDER BY created_at DESC`,
+    sql: `SELECT a.id, a.title, a.status, a.supply_filled_pct, a.buyer_token,
+                 a.buyer_is_other, a.created_at, t.exclusivity
+            FROM asks a
+            LEFT JOIN ask_terms t ON t.ask_id = a.id
+           WHERE a.user_id = ?
+             AND a.id NOT IN (SELECT ask_id FROM hidden_asks)
+           ORDER BY a.created_at DESC`,
     args: [userId],
   });
   for (const r of mine.rows) {
@@ -145,6 +154,7 @@ export async function findBuyerMatches(userId: string): Promise<BuyerMatchGroup[
       supplyFilledPct: Number(r.supply_filled_pct),
       buyerIsOther: Number(r.buyer_is_other) === 1,
       createdAt: Number(r.created_at),
+      exclusivity: isExclusivity(r.exclusivity) ? r.exclusivity : null,
     });
   }
 
@@ -247,6 +257,99 @@ export async function listOutgoingCollabRequests(
     };
   }
   return out;
+}
+
+/* ------------------------------------------------------ supplier pooling */
+
+/** Another supplier with a live offer on the same ask as the viewer. */
+export type CoOfferer = {
+  username: string;
+  status: "pending" | "accepted";
+};
+
+/** An ask the viewer has a live offer on, with the other suppliers on it. */
+export type CoOfferedAsk = {
+  askId: string;
+  askTitle: string;
+  askStatus: AskStatus;
+  supplyFilledPct: number;
+  posterUsername: string;
+  myStatus: "pending" | "accepted";
+  others: CoOfferer[];
+};
+
+/**
+ * Every ask the viewer has a live (pending or accepted) collab request on,
+ * with the OTHER live requesters on the same ask. This is how a supplier
+ * with no asks of their own finds partners: two people offering into the
+ * same ask are either pooling or undercutting, and they only get to choose
+ * if they can see each other. Declined and withdrawn requests are invisible
+ * on both sides: a declined supplier is not on the ask, and showing them
+ * would leak the poster's decision. Hidden asks do not exist here, same as
+ * everywhere in matching.
+ */
+export async function listCoOfferedAsks(userId: string): Promise<CoOfferedAsk[]> {
+  const db = await getDb();
+  const mine = await db.execute({
+    sql: `SELECT a.id, a.title, a.status, a.supply_filled_pct,
+                 pu.username AS poster_username,
+                 cr.status AS my_status, cr.created_at AS requested_at
+            FROM collab_requests cr
+            JOIN asks a  ON a.id  = cr.ask_id
+            JOIN users pu ON pu.id = a.user_id
+           WHERE cr.requester_id = ?
+             AND cr.status IN ('pending', 'accepted')
+             AND a.id NOT IN (SELECT ask_id FROM hidden_asks)
+           ORDER BY cr.created_at DESC`,
+    args: [userId],
+  });
+  if (mine.rows.length === 0) return [];
+
+  const asks: CoOfferedAsk[] = mine.rows.map((r) => ({
+    askId: String(r.id),
+    askTitle: String(r.title),
+    askStatus: toStatus(r.status),
+    supplyFilledPct: Number(r.supply_filled_pct),
+    posterUsername: String(r.poster_username),
+    myStatus: String(r.my_status) === "accepted" ? "accepted" : "pending",
+    others: [],
+  }));
+
+  const ids = asks.map((a) => a.askId);
+  const placeholders = ids.map(() => "?").join(", ");
+  const others = await db.execute({
+    sql: `SELECT cr.ask_id, cr.status, u.username
+            FROM collab_requests cr
+            JOIN users u ON u.id = cr.requester_id
+           WHERE cr.ask_id IN (${placeholders})
+             AND cr.requester_id <> ?
+             AND cr.status IN ('pending', 'accepted')
+           ORDER BY cr.created_at ASC`,
+    args: [...ids, userId],
+  });
+  const byAsk = new Map(asks.map((a) => [a.askId, a]));
+  for (const r of others.rows) {
+    byAsk.get(String(r.ask_id))?.others.push({
+      username: String(r.username),
+      status: String(r.status) === "accepted" ? "accepted" : "pending",
+    });
+  }
+  return asks;
+}
+
+/**
+ * How many asks the viewer has on the board that matching can anchor to.
+ * Exists so /matches can be honest about WHY a section is empty: no asks is
+ * a different situation from asks with no overlap.
+ */
+export async function countOwnAsks(userId: string): Promise<number> {
+  const db = await getDb();
+  const rs = await db.execute({
+    sql: `SELECT COUNT(*) AS n FROM asks
+           WHERE user_id = ? AND id NOT IN (SELECT ask_id FROM hidden_asks)`,
+    args: [userId],
+  });
+  return Number(rs.rows[0]?.n ?? 0);
 }
 
 export const MAX_COLLAB_NOTE_LENGTH = 2000;

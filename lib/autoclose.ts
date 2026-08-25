@@ -14,9 +14,10 @@
  *   * the owner pressing "Still ongoing" (optionally with a short note,
  *     shown on the ask page as the last update),
  *   * a deal linked to the ask reaching co-attested: every non-declined
- *     named participant confirmed. That one is read from deal_participants
- *     at close time rather than written here, so the deals code path does
- *     not need to know this table exists.
+ *     named participant confirmed. lib/deals.ts writes ask_activity the
+ *     moment the last participant settles, and the sweep below ALSO reads
+ *     deal_participants directly at close time, so settles from before that
+ *     write existed still count.
  *
  * Asks from before ask_activity existed have no row; their created_at is
  * the honest fallback, which means the first autoclose pass sweeps genuinely

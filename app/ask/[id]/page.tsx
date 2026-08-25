@@ -14,14 +14,20 @@ import { notFound, redirect } from "next/navigation";
 import { DbNotConfiguredNotice, PageStub } from "@/components/page-stub";
 import { StatusMark } from "@/components/ask/meta";
 import { timeAgo } from "@/components/ask/format";
+import { AutoCloseNotice, LastUpdate } from "@/components/ask/activity";
 import { CollabPanel } from "@/components/ask/collab-button";
+import { ConfirmedDealsNote, OwnerDealBanner } from "@/components/ask/deal-feedback";
 import { DealPeople, type DealPerson } from "@/components/ask/deal-people";
 import { MandateBlock, MandateCommit } from "@/components/ask/mandate-commit";
 import { OwnerControls } from "@/components/ask/owner-controls";
+import { RelatedSection } from "@/components/ask/related";
+import { AskTerms } from "@/components/ask/terms";
 import { HideControl } from "@/components/admin/hide-control";
 import { ModerationBanner } from "@/components/admin/moderation-banner";
 import { getSessionUser } from "@/lib/auth";
+import { effectiveAffirmedAt, getAskClosure } from "@/lib/autoclose";
 import { getDb, isDbConfigured } from "@/lib/db";
+import { confirmedDealCountByAsk } from "@/lib/deals";
 import { getMandate } from "@/lib/mandates";
 import { getHiddenInfo, isOperator } from "@/lib/moderation";
 import { categoryLabel, unpackTags, type AskStatus } from "@/lib/taxonomy";
@@ -107,11 +113,15 @@ export default async function AskDetailPage({
 
   // A hidden ask is a 404 to everyone except its poster (who gets the page
   // with the reason on it) and operators (who get the same plus unhide).
-  const [hiddenInfo, operator, mandate] = await Promise.all([
-    getHiddenInfo(ask.id),
-    isOperator(user.id),
-    getMandate(ask.id),
-  ]);
+  const [hiddenInfo, operator, mandate, confirmedDeals, closure, affirmedAt] =
+    await Promise.all([
+      getHiddenInfo(ask.id),
+      isOperator(user.id),
+      getMandate(ask.id),
+      confirmedDealCountByAsk(ask.id),
+      getAskClosure(ask.id),
+      effectiveAffirmedAt(ask.id, Number(row.created_at)),
+    ]);
   if (hiddenInfo && !mine && !operator) notFound();
 
   const sameBuyerRs = await db.execute({
@@ -185,6 +195,7 @@ export default async function AskDetailPage({
         <span className="text-[0.6875rem] uppercase tracking-[0.08em] text-ink-dim">
           {categoryLabel(ask.category)}
         </span>
+        <AskTerms askId={ask.id} dim={closed} />
         <span className="font-mono text-[0.6875rem] text-ink-ghost">
           posted {timeAgo(ask.created_at, nowMs)} by @{ask.username}
           {mine ? " (you)" : ""}
@@ -202,6 +213,10 @@ export default async function AskDetailPage({
           canUnhide={operator}
         />
       ) : null}
+
+      {mine && !closed ? <OwnerDealBanner count={confirmedDeals} /> : null}
+
+      <AutoCloseNotice askId={ask.id} />
 
       <div className="mt-10 grid gap-10 lg:grid-cols-[minmax(0,1fr)_320px]">
         {/* --------------------------------------------------- main column */}
@@ -251,6 +266,8 @@ export default async function AskDetailPage({
             </p>
           </div>
 
+          <ConfirmedDealsNote count={confirmedDeals} />
+
           {/* description */}
           <div className="mt-8">
             <div className="bt-label">The ask, in the poster&apos;s words</div>
@@ -264,6 +281,17 @@ export default async function AskDetailPage({
               </p>
             )}
           </div>
+
+          {/* the poster's last "still ongoing" note, when one exists */}
+          <LastUpdate askId={ask.id} />
+
+          {/* related asks and deals: same buyer token, same shape */}
+          <RelatedSection
+            askId={ask.id}
+            buyerToken={ask.buyer_token}
+            category={ask.category}
+            tags={tags}
+          />
         </div>
 
         {/* ---------------------------------------------------- side rail */}
@@ -326,11 +354,15 @@ export default async function AskDetailPage({
 
           {/* lifecycle or collab */}
           {mine ? (
-            <OwnerControls
-              askId={ask.id}
-              supplyFilledPct={ask.supply_filled_pct}
-              status={ask.status}
-            />
+            <div id="owner-controls">
+              <OwnerControls
+                askId={ask.id}
+                supplyFilledPct={ask.supply_filled_pct}
+                status={ask.status}
+                affirmedAt={affirmedAt}
+                autoClosed={closure?.reason === "auto_stale"}
+              />
+            </div>
           ) : (
             <CollabPanel askId={ask.id} existingStatus={myRequest} closed={closed} />
           )}

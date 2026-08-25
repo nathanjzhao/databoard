@@ -492,6 +492,49 @@ export async function countPendingConfirmations(userId: string): Promise<number>
   return Number(rs.rows[0]?.n ?? 0);
 }
 
+/* ---------------------------------------------------- ask <-> deal feedback */
+
+/**
+ * A linked deal reaching co-attested is proof the ask is alive, so it counts
+ * as an activity affirmation: the auto-close clock (ask_activity) resets.
+ * Upsert, because asks created before ask_activity existed have no row to
+ * update. affirmed_at only moves forward, and the owner's update note is
+ * never touched from the deals side.
+ */
+async function refreshAskActivity(askId: string): Promise<void> {
+  const db = await getDb();
+  await db.execute({
+    sql: `INSERT INTO ask_activity (ask_id, affirmed_at, note)
+          VALUES (?, ?, '')
+          ON CONFLICT(ask_id) DO UPDATE
+            SET affirmed_at = MAX(ask_activity.affirmed_at, excluded.affirmed_at)`,
+    args: [askId, now()],
+  });
+}
+
+/**
+ * How many deals behind an ask stand at co-attested or better: at least one
+ * named participant, none pending, none of the confirmations unilateral.
+ * Same predicate as deriveTier, in SQL. A count, deliberately: the ask page
+ * shows that confirmed deals reference the ask, never their amounts.
+ */
+export async function confirmedDealCountByAsk(askId: string): Promise<number> {
+  const db = await getDb();
+  const rs = await db.execute({
+    sql: `SELECT COUNT(*) AS n
+            FROM deals d
+           WHERE d.ask_id = ?
+             AND EXISTS (SELECT 1 FROM deal_participants p
+                          WHERE p.deal_id = d.id AND p.role = 'participant'
+                            AND p.status = 'confirmed')
+             AND NOT EXISTS (SELECT 1 FROM deal_participants p
+                              WHERE p.deal_id = d.id AND p.role = 'participant'
+                                AND p.status = 'pending')`,
+    args: [askId],
+  });
+  return Number(rs.rows[0]?.n ?? 0);
+}
+
 /* ------------------------------------------------------ confirm / decline */
 
 export type ActOnShareResult =
@@ -526,6 +569,12 @@ async function actOnOwnShare(
       : { ok: false, error: "not_found" };
   }
   const detail = await getDealForUser(dealId, userId);
+  // This settle may have been the one that tipped the deal to co-attested
+  // (a final confirm, or a final decline leaving only confirmations). A
+  // co-attested deal behind an ask affirms the ask is still real business.
+  if (detail && detail.askId && detail.tier !== "claimed") {
+    await refreshAskActivity(detail.askId);
+  }
   return { ok: true, status, tier: detail?.tier ?? "claimed" };
 }
 

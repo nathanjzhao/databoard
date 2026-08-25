@@ -34,6 +34,10 @@ const CAN_SEE: ReadonlyArray<readonly [string, string]> = [
     "64 hex characters and a label; fingerprints of documents, not documents",
   ],
   [
+    "Ask lifecycle records",
+    "stated exclusivity terms, last-affirmed timestamps with the poster's own update notes, and why each closed ask closed (owner, or auto-stale after 7 days without an update)",
+  ],
+  [
     "Rate-limit buckets",
     "keyed HMAC buckets with counts and window starts; the IP, contact or handle behind a bucket is not stored and not recoverable",
   ],

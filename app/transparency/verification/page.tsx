@@ -272,6 +272,16 @@ export default function VerificationPage() {
             and here.
           </p>
           <p className="mt-3 max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
+            Two smaller records ride on asks, both stated rather than proved.
+            Exclusivity terms (exclusive or non-exclusive) are the
+            poster&apos;s own statement of whether supply sold into the ask
+            can be resold elsewhere; the board displays the word and enforces
+            nothing behind it. And every ask runs on an activity clock: an
+            open ask nobody affirms for 7 days closes automatically, with the
+            reason recorded and shown on the ask page, so &quot;open&quot;
+            means the poster recently said so, not that anyone checked.
+          </p>
+          <p className="mt-3 max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
             Two stronger rungs are planned, not shipped, because each has a
             hole we will not paper over. DKIM-proved artifacts: an email
             carries its sending domain&apos;s signature, and checking it
