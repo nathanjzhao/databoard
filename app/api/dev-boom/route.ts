@@ -21,7 +21,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 function boom(): NextResponse {
-  if (process.env.NODE_ENV !== "production") {
+  // Gate on VERCEL, not NODE_ENV: CI runs the built app via `next start`
+  // (NODE_ENV=production) and still needs this hook; a real deployment
+  // always has VERCEL set, so the gate is strictly tighter there.
+  if (!process.env.VERCEL) {
     throw new Error(
       "dev-boom: synthetic failure quoting boom-victim@example.net and +1 415 555 0199",
     );

@@ -566,11 +566,17 @@ test("4 a tampered evaluation fails the DLEQ check: visible refusal, nothing sub
       data.evaluation =
         data.evaluation.slice(0, -1) + (last === "0" ? "1" : "0");
     }
-    await route.fulfill({
-      status: res.status(),
-      contentType: "application/json",
-      body: JSON.stringify(data),
-    });
+    try {
+      await route.fulfill({
+        status: res.status(),
+        contentType: "application/json",
+        body: JSON.stringify(data),
+      });
+    } catch {
+      // The compose form also fires an evaluate for its similar-count hint
+      // and aborts it on state changes; a canceled request cannot be
+      // fulfilled and is irrelevant to the tamper claim below.
+    }
   });
 
   await page.goto("/new");

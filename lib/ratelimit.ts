@@ -48,8 +48,12 @@ export type RateLimitRule = {
 
 export const RATE_LIMITS = {
   requestCodePerContact: { scope: "otp-contact", limit: 5, windowMs: 10 * 60_000 },
-  requestCodePerIp: { scope: "otp-ip", limit: 20, windowMs: 10 * 60_000 },
-  signupPerIp: { scope: "signup-ip", limit: 10, windowMs: 10 * 60_000 },
+  // Per-IP caps are backstops against enumeration, not the primary guard
+  // (the per-contact bucket is). They must survive one NAT'd office or a
+  // signup rush at a demo: 10/10min proved too tight the day the test
+  // suite got fast enough to be such a rush.
+  requestCodePerIp: { scope: "otp-ip", limit: 60, windowMs: 10 * 60_000 },
+  signupPerIp: { scope: "signup-ip", limit: 30, windowMs: 10 * 60_000 },
   loginPerHandle: { scope: "login-handle", limit: 10, windowMs: 5 * 60_000 },
   loginPerIp: { scope: "login-ip", limit: 30, windowMs: 5 * 60_000 },
   voprfPerUser: { scope: "voprf-user", limit: 30, windowMs: 60_000 },

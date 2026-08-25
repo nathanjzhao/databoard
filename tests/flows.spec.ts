@@ -547,10 +547,27 @@ test("09 SIMILAR + TERMS AT POST TIME: the compose hint counts same-buyer asks, 
     await page.getByLabel("Description").fill(NEW_ASK.description);
     await page.getByLabel("Buying lab").selectOption(NEW_ASK.buyer);
 
-    // The quiet hint: exactly one open ask already names Anthropic (the
-    // seeded exclusive one; the closed jailbreak ask does not count).
+    // The quiet hint counts open same-buyer asks. The exact number depends
+    // on which suites ran before this one (flow.spec adds Anthropic asks of
+    // its own), so read the truth from the DB: every non-closed ask carrying
+    // the seeded Anthropic token, minus the one being composed.
+    const anthTokenRs = await dbQuery(
+      `SELECT buyer_token FROM asks WHERE title = ?`,
+      [EXCLUSIVE_ASK],
+    );
+    const anthToken = String(anthTokenRs.rows[0].buyer_token);
+    const openRs = await dbQuery(
+      `SELECT COUNT(*) AS n FROM asks WHERE buyer_token = ? AND status != 'closed'`,
+      [anthToken],
+    );
+    const expected = Number(openRs.rows[0].n);
+    expect(expected).toBeGreaterThan(0);
     await expect(
-      page.getByText("1 open ask already names this buyer."),
+      page.getByText(
+        `${expected} open ${expected === 1 ? "ask" : "asks"} already ${
+          expected === 1 ? "names" : "name"
+        } this buyer.`,
+      ),
     ).toBeVisible();
     await shot(page, "compose-similar-hint");
 
@@ -584,8 +601,28 @@ test("09 SIMILAR + TERMS AT POST TIME: the compose hint counts same-buyer asks, 
     await expect(openLink).toBeVisible();
     expect(await openLink.getAttribute("href")).toMatch(/^\/ask\//);
     await expect(page.getByRole("link", { name: LEGACY_TERMS_ASK })).toBeVisible();
+// Deal counts depend on which suites ran first (deals.spec confirms
+    // Anthropic deals of its own), so mirror the component's co-attested
+    // query instead of hardcoding.
+    const dealRs = await dbQuery(
+      `SELECT COUNT(*) AS n FROM deals d
+        WHERE d.buyer_token = ?
+          AND EXISTS (SELECT 1 FROM deal_participants pc
+                       WHERE pc.deal_id = d.id AND pc.role = 'participant'
+                         AND pc.status = 'confirmed')
+          AND NOT EXISTS (SELECT 1 FROM deal_participants pp
+                           WHERE pp.deal_id = d.id AND pp.role = 'participant'
+                             AND pp.status = 'pending')`,
+      [anthToken],
+    );
+    const dealCount = Number(dealRs.rows[0].n);
+    expect(dealCount).toBeGreaterThan(0);
     await expect(
-      page.getByText(/1 confirmed deal on this board names the same buyer/),
+      page.getByText(
+        new RegExp(
+          `${dealCount} confirmed deal${dealCount === 1 ? "" : "s"} on this board name${dealCount === 1 ? "s" : ""} the same buyer`,
+        ),
+      ),
     ).toBeVisible();
     await shot(page, "ask-related-section");
 

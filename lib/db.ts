@@ -39,10 +39,20 @@ type DbTarget = { url: string; authToken?: string };
 function resolveTarget(): DbTarget | null {
   const url = process.env.TURSO_DATABASE_URL;
   if (url && url.length > 0) {
+    // A CI runner or the Playwright webServer must never talk to a remote
+    // database: a leaked .env.production.local once pointed the whole test
+    // suite at production. Fail loudly instead of quietly writing there.
+    if (process.env.CI && !process.env.VERCEL) {
+      throw new Error(
+        "TURSO_DATABASE_URL is set in a CI/test environment; refusing a remote database.",
+      );
+    }
     return { url, authToken: process.env.TURSO_AUTH_TOKEN || undefined };
   }
-  if (process.env.NODE_ENV === "production" && !process.env.BLIND_TENDER_DB) {
-    // Deployed with no database. Callers show the notice; nothing crashes.
+  if (process.env.VERCEL && !process.env.BLIND_TENDER_DB) {
+    // DEPLOYED with no database. Callers show the notice; nothing crashes.
+    // Gate on VERCEL, not NODE_ENV: a locally-built `next start` (CI runs
+    // the suites that way) is not a deployment and gets the file DB below.
     return null;
   }
   // Local dev / scripts: a file next to the repo. BLIND_TENDER_DB overrides

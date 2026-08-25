@@ -25,7 +25,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
-  if (process.env.NODE_ENV === "production") {
+  // VERCEL, not NODE_ENV: local and CI runs of the built app stay
+  // secret-free while every real deployment requires the bearer token.
+  if (process.env.VERCEL) {
     const secret = process.env.CRON_SECRET ?? "";
     if (!secret) {
       return NextResponse.json(
