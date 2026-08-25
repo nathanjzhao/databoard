@@ -4,14 +4,23 @@
  * components/ask/owner-controls.tsx
  *
  * What a poster can do to their own ask, which is deliberately little:
- * move the supply meter, or close it. Closing is permanent from this panel
- * (there is no reopen button; post again instead), so the close button asks
- * twice.
+ * move the supply meter, affirm it is still ongoing, or close it. Closing
+ * is permanent from this panel (there is no reopen button; post again
+ * instead), so the close button asks twice.
+ *
+ * The affirmation feeds the 7-day autoclose clock (lib/autoclose.ts):
+ * asks nobody affirms for a week close themselves. The countdown appears
+ * here once less than 3 days remain, and "Still ongoing" resets it,
+ * optionally with a short note the ask page shows as the last update.
  */
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { statusForPct } from "@/components/ask/format";
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const STALE_AFTER_MS = 7 * DAY_MS;
+const WARN_UNDER_MS = 3 * DAY_MS;
 
 const RANGE_CLASS = [
   "w-full cursor-pointer appearance-none bg-transparent focus:outline-none",
@@ -38,20 +47,32 @@ export function OwnerControls({
   askId,
   supplyFilledPct,
   status,
+  affirmedAt = 0,
+  autoClosed = false,
 }: {
   askId: string;
   supplyFilledPct: number;
   status: "open" | "partial" | "closed";
+  /** Effective last affirmation (lib/autoclose.ts effectiveAffirmedAt). */
+  affirmedAt?: number;
+  /** True when the autoclose pass closed this ask, not the owner. */
+  autoClosed?: boolean;
 }) {
   const router = useRouter();
   const [pct, setPct] = useState(supplyFilledPct);
-  const [busy, setBusy] = useState<"save" | "close" | null>(null);
+  const [busy, setBusy] = useState<"save" | "close" | "affirm" | null>(null);
   const [confirmClose, setConfirmClose] = useState(false);
+  const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const dirty = pct !== supplyFilledPct;
 
-  async function patch(body: { supplyFilledPct?: number; close?: boolean }) {
+  async function patch(body: {
+    supplyFilledPct?: number;
+    close?: boolean;
+    affirm?: boolean;
+    note?: string;
+  }) {
     const res = await fetch(`/api/asks/${askId}`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -67,6 +88,19 @@ export function OwnerControls({
     setError(null);
     try {
       await patch({ supplyFilledPct: pct });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function affirmOngoing() {
+    setBusy("affirm");
+    setError(null);
+    try {
+      await patch({ affirm: true, note: note.trim() });
+      setNote("");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -93,15 +127,25 @@ export function OwnerControls({
   if (status === "closed") {
     return (
       <div className="border border-rule bg-panel px-5 py-5">
-        <div className="bt-label">Your ask, closed</div>
+        <div className="bt-label">
+          {autoClosed ? "Your ask, closed automatically" : "Your ask, closed"}
+        </div>
         <p className="mt-2 text-[0.8125rem] leading-relaxed text-ink-dim">
-          It stays on the board as a record at {supplyFilledPct}% filled, and
-          people can still reach you through it. There is no reopen; post a
-          fresh ask if the gap comes back.
+          {autoClosed
+            ? `Seven days passed without an update, so the board closed it at ${supplyFilledPct}% filled. `
+            : `It stays on the board as a record at ${supplyFilledPct}% filled, and people can still reach you through it. `}
+          There is no reopen; post a fresh ask if the gap
+          {autoClosed ? " is still real" : " comes back"}.
         </p>
       </div>
     );
   }
+
+  // The autoclose countdown, computed against the effective affirmation the
+  // server rendered. Surfaced only once it is close enough to matter.
+  const remainingMs = affirmedAt > 0 ? affirmedAt + STALE_AFTER_MS - Date.now() : 0;
+  const daysLeft = Math.max(1, Math.ceil(remainingMs / DAY_MS));
+  const showCountdown = affirmedAt > 0 && remainingMs < WARN_UNDER_MS;
 
   return (
     <div className="border border-rule bg-panel">
@@ -152,6 +196,39 @@ export function OwnerControls({
             </button>
           ) : null}
         </div>
+      </div>
+
+      <div className="border-t border-rule px-5 py-4">
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="bt-label">Still ongoing</span>
+          {showCountdown ? (
+            <span className="font-mono text-[0.625rem] uppercase tracking-[0.08em] text-amber">
+              {remainingMs <= 0
+                ? "auto-closes on the next sweep unless updated"
+                : `auto-closes in ${daysLeft}d unless updated`}
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-2 text-[0.75rem] leading-relaxed text-ink-faint">
+          Asks nobody affirms for 7 days close themselves. Supply updates
+          count; so does this button.
+        </p>
+        <input
+          className="bt-input mt-3"
+          maxLength={200}
+          placeholder="Optional update note, shown on the ask"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          aria-label="Update note"
+        />
+        <button
+          type="button"
+          onClick={affirmOngoing}
+          disabled={busy !== null}
+          className="bt-btn mt-3 px-4 py-1.5 text-[0.75rem]"
+        >
+          {busy === "affirm" ? "Affirming" : "Still ongoing"}
+        </button>
       </div>
 
       <div className="border-t border-rule px-5 py-4">

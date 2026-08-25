@@ -31,8 +31,15 @@ const PUBLIC_PATHS = new Set([
  * Prefixes reachable without a session cookie. /transparency/ covers the
  * transparency subpages (e.g. /transparency/verification), which are public
  * for the same reason /transparency is: the claims are the pitch.
+ * /api/cron/ carries no session by construction (Vercel cron sends a bearer
+ * token, not a cookie); each cron route enforces CRON_SECRET itself.
  */
-const PUBLIC_PREFIXES = ["/api/auth/", "/api/transparency/", "/transparency/"];
+const PUBLIC_PREFIXES = [
+  "/api/auth/",
+  "/api/transparency/",
+  "/transparency/",
+  "/api/cron/",
+];
 
 /**
  * True when `pathname` may be served without a session. Next static assets

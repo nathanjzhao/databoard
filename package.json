@@ -8,6 +8,7 @@
     "build": "npm run gen:schema && next build",
     "start": "next start",
     "seed": "npm run gen:schema && node scripts/seed.ts",
+    "autoclose": "npm run gen:schema && node scripts/autoclose.ts",
     "migrate:buyer-tokens": "npm run gen:schema && node scripts/migrate-buyer-tokens.ts",
     "grant-operator": "npm run gen:schema && node scripts/grant-operator.ts",
     "reset-db": "node scripts/reset-db.mjs",

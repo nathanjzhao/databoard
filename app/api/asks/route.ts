@@ -2,8 +2,14 @@
  * POST /api/asks
  *
  * Body:  { title, category, description, modalityTags, volume, priceBand,
- *          supplyFilledPct, buyerTokenV2, buyerIsOther }
+ *          supplyFilledPct, buyerTokenV2, buyerIsOther, exclusivity }
  * Reply: { id }
+ *
+ * exclusivity is required and two-valued ('exclusive' | 'nonexclusive'):
+ * whether supply committed to this ask can be resold elsewhere. It lands in
+ * ask_terms in the same transaction. The transaction also seeds
+ * ask_activity: posting is the first affirmation on the 7-day autoclose
+ * clock (lib/autoclose.ts).
  *
  * No buyer name crosses the wire here any more, in any form. The browser
  * blinds the name, has /api/voprf/evaluate compute the token without seeing
@@ -27,6 +33,7 @@ import { DbNotConfiguredError, getDb, now } from "@/lib/db";
 import { newId } from "@/lib/crypto";
 import { isBuyerTokenV2 } from "@/lib/voprf";
 import { mandateProblem, normalizeMandateHash, type MandateInput } from "@/lib/mandates";
+import { isExclusivity } from "@/lib/terms";
 import { CATEGORIES, MODALITIES, PRICE_BANDS, packTags } from "@/lib/taxonomy";
 import { clampPct, statusForPct } from "@/components/ask/format";
 
@@ -51,6 +58,7 @@ type Body = {
   supplyFilledPct?: number;
   buyerTokenV2?: string;
   buyerIsOther?: boolean;
+  exclusivity?: string;
   mandate?: MandateInput | null;
 };
 
@@ -92,6 +100,10 @@ function problem(body: Body): string | null {
   }
   if (typeof body.buyerIsOther !== "boolean") {
     return "Say whether the buyer was off-list.";
+  }
+
+  if (!isExclusivity(body.exclusivity)) {
+    return "State the terms: exclusive or non-exclusive.";
   }
 
   if (body.mandate != null) {
@@ -151,6 +163,16 @@ export async function POST(request: Request) {
           statusForPct(pct),
           t,
         ],
+      },
+      {
+        // The stated terms, one of two words, same transaction as the ask.
+        sql: `INSERT INTO ask_terms (ask_id, exclusivity) VALUES (?, ?)`,
+        args: [id, body.exclusivity ?? ""] as (string | number)[],
+      },
+      {
+        // Posting is the first affirmation on the autoclose clock.
+        sql: `INSERT INTO ask_activity (ask_id, affirmed_at, note) VALUES (?, ?, '')`,
+        args: [id, t] as (string | number)[],
       },
     ];
     if (body.mandate != null) {

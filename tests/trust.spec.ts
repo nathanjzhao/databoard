@@ -198,6 +198,7 @@ async function postAsk(p: Page, ask: typeof ASK_F): Promise<string> {
   await p.getByLabel("Description").fill(ask.description);
   if (ask.pct > 0) await setSlider(p, "Percent of supply already filled", ask.pct);
   await p.getByLabel("Buying lab").selectOption(ask.buyer);
+  await p.getByText("Non-exclusive", { exact: true }).click();
   await p.getByRole("button", { name: "Post to the board" }).click();
   await p.waitForURL(/\/ask\/[^/]+$/);
   await expect(p.getByRole("heading", { name: ask.title })).toBeVisible();
@@ -485,7 +486,10 @@ test("3a G posts the second Anthropic ask; chips collide; /matches groups them",
 
   await page.goto("/matches");
   await expect(page.getByText("Buyer overlap")).toBeVisible();
-  await expect(page.getByText(ASK_F.title)).toBeVisible();
+  // The title can legitimately appear twice here now: once in the buyer
+  // overlap group, once under "asks you offered on" (G holds a live
+  // request on F's ask). Visible at least once is the claim.
+  await expect(page.getByText(ASK_F.title).first()).toBeVisible();
   await shot(page, "03c-matches-grouped.png");
 });
 
@@ -574,6 +578,7 @@ test("4 a tampered evaluation fails the DLEQ check: visible refusal, nothing sub
   await page.getByLabel("Category").selectOption({ label: ASK_TAMPERED.category });
   await page.getByLabel("Description").fill(ASK_TAMPERED.description);
   await page.getByLabel("Buying lab").selectOption(ASK_TAMPERED.buyer);
+  await page.getByText("Non-exclusive", { exact: true }).click();
   await page.getByRole("button", { name: "Post to the board" }).click();
 
   // The client refuses: visible error naming the proof, no navigation.

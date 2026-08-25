@@ -180,6 +180,7 @@ async function postAsk(p: Page, ask: typeof ASK_A): Promise<string> {
   await setSlider(p, "Percent of supply already filled", ask.pct);
   await expect(p.getByText("Supply already filled")).toBeVisible();
   await p.getByLabel("Buying lab").selectOption(ask.buyer);
+  await p.getByText("Non-exclusive", { exact: true }).click();
   await p.getByRole("button", { name: "Post to the board" }).click();
   await p.waitForURL(/\/ask\/[^/]+$/);
   await expect(p.getByRole("heading", { name: ask.title })).toBeVisible();
@@ -406,7 +407,10 @@ test("09 THE PRIVACY CLAIM: no PII string appears in any row of any table", asyn
   );
   const tables = tablesRs.rows.map((r) => String(r.name));
   expect(tables.sort()).toEqual([
+    "ask_activity",
+    "ask_closures",
     "ask_mandates",
+    "ask_terms",
     "asks",
     "collab_requests",
     "deal_participants",

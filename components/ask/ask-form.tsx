@@ -15,11 +15,12 @@
  * shows a placeholder because the token exists only after that round trip.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BUYER_OPTIONS, OTHER_BUYER, isKnownBuyer } from "@/lib/buyers";
 import { mintBuyerTokenV2 } from "@/lib/voprf";
+import type { Exclusivity } from "@/lib/terms";
 import { CATEGORIES, MODALITIES, PRICE_BANDS, packTags } from "@/lib/taxonomy";
 import { statusForPct } from "@/components/ask/format";
 import { MandatePin, type MandatePinState } from "@/components/ask/mandate-commit";
@@ -59,21 +60,57 @@ export function AskForm() {
   const [pct, setPct] = useState(0);
   const [buyerChoice, setBuyerChoice] = useState("");
   const [buyerOther, setBuyerOther] = useState("");
+  const [exclusivity, setExclusivity] = useState<Exclusivity | "">("");
   const [mandate, setMandate] = useState<MandatePinState>({ kind: "none" });
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [similarOpen, setSimilarOpen] = useState<number | null>(null);
 
   const buyer =
     buyerChoice === OTHER_BUYER ? buyerOther.trim() : buyerChoice;
   const derivedStatus = statusForPct(pct);
 
+  // The quiet hint: once a buyer and category are picked, ask the board how
+  // many open asks already carry this buyer's token. The name follows the
+  // same blind path as the submit (minted client-side, token cached per
+  // name); any failure just means no hint, never a fallback that sends the
+  // name. Debounced so typing an off-list name does not mint per keystroke.
+  const tokenCache = useRef(new Map<string, string>());
+  useEffect(() => {
+    setSimilarOpen(null);
+    if (buyer.length === 0 || category === "") return;
+    let stale = false;
+    const timer = setTimeout(async () => {
+      try {
+        let token = tokenCache.current.get(buyer);
+        if (!token) {
+          token = await mintBuyerTokenV2(buyer);
+          tokenCache.current.set(buyer, token);
+        }
+        const q = new URLSearchParams({ token, category });
+        const res = await fetch(`/api/asks/similar?${q}`);
+        if (!res.ok) return;
+        const data = (await res.json()) as { sameBuyerOpen?: number };
+        if (!stale) setSimilarOpen(Number(data.sameBuyerOpen ?? 0));
+      } catch {
+        // No hint is the whole failure mode.
+      }
+    }, 600);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [buyer, category]);
+
   // A hashed-but-unlabeled mandate blocks posting instead of being dropped
-  // silently; the pin section says so next to the label field.
+  // silently; the pin section says so next to the label field. Terms are
+  // required: an ask that does not state exclusivity does not post.
   const ready =
     title.trim().length >= 8 &&
     category !== "" &&
     buyer.length > 0 &&
+    exclusivity !== "" &&
     mandate.kind !== "incomplete" &&
     !busy;
 
@@ -107,6 +144,7 @@ export function AskForm() {
           supplyFilledPct: pct,
           buyerTokenV2,
           buyerIsOther: !isKnownBuyer(buyer),
+          exclusivity,
           mandate:
             mandate.kind === "ready"
               ? { docHash: mandate.docHash, label: mandate.label }
@@ -314,10 +352,40 @@ export function AskForm() {
               How tokens work
             </Link>
           </p>
+          {similarOpen !== null && similarOpen > 0 ? (
+            <p className="border-l-2 border-rule pl-3 font-mono text-[0.6875rem] text-ink-faint">
+              {similarOpen} open {similarOpen === 1 ? "ask" : "asks"} already{" "}
+              {similarOpen === 1 ? "names" : "name"} this buyer.
+            </p>
+          ) : null}
         </Section>
 
-        {/* ---------------------------------------------- 05 · the mandate */}
-        <Section n="05" heading="Pin a mandate document">
+        {/* -------------------------------------------------- 05 · terms */}
+        <Section n="05" heading="Terms">
+          <div role="radiogroup" aria-label="Exclusivity" className="grid gap-2 sm:grid-cols-2">
+            <ExclusivityOption
+              value="exclusive"
+              term="Exclusive"
+              line="Supply sold here cannot be resold elsewhere."
+              selected={exclusivity === "exclusive"}
+              onSelect={() => setExclusivity("exclusive")}
+            />
+            <ExclusivityOption
+              value="nonexclusive"
+              term="Non-exclusive"
+              line="Suppliers may reuse the supply elsewhere."
+              selected={exclusivity === "nonexclusive"}
+              onSelect={() => setExclusivity("nonexclusive")}
+            />
+          </div>
+          <p className="text-[0.75rem] leading-relaxed text-ink-faint">
+            Required. Shown on the board next to the ask, so suppliers know
+            whether overlap means competition before they reach out.
+          </p>
+        </Section>
+
+        {/* ---------------------------------------------- 06 · the mandate */}
+        <Section n="06" heading="Pin a mandate document">
           <MandatePin onChange={setMandate} />
         </Section>
 
@@ -352,9 +420,64 @@ export function AskForm() {
         pct={pct}
         buyer={buyer}
         derivedStatus={derivedStatus}
+        exclusivity={exclusivity}
         mandate={mandate}
       />
     </div>
+  );
+}
+
+/**
+ * One of the two terms. A real radio under the styling, so keyboards and
+ * screen readers get the native semantics.
+ */
+function ExclusivityOption({
+  value,
+  term,
+  line,
+  selected,
+  onSelect,
+}: {
+  value: string;
+  term: string;
+  line: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <label
+      className={[
+        "block cursor-pointer border px-3.5 py-3 transition-colors",
+        selected
+          ? "border-ink bg-ink"
+          : "border-rule-strong bg-panel-2 hover:border-ink-ghost",
+      ].join(" ")}
+    >
+      <input
+        type="radio"
+        name="exclusivity"
+        value={value}
+        checked={selected}
+        onChange={onSelect}
+        className="sr-only"
+      />
+      <span
+        className={[
+          "block font-mono text-[0.6875rem] uppercase tracking-[0.1em]",
+          selected ? "text-void" : "text-ink-dim",
+        ].join(" ")}
+      >
+        {term}
+      </span>
+      <span
+        className={[
+          "mt-1 block text-[0.75rem] leading-relaxed",
+          selected ? "text-void/70" : "text-ink-faint",
+        ].join(" ")}
+      >
+        {line}
+      </span>
+    </label>
   );
 }
 
@@ -392,6 +515,7 @@ function Receipt({
   pct,
   buyer,
   derivedStatus,
+  exclusivity,
   mandate,
 }: {
   title: string;
@@ -402,6 +526,7 @@ function Receipt({
   pct: number;
   buyer: string;
   derivedStatus: string;
+  exclusivity: Exclusivity | "";
   mandate: MandatePinState;
 }) {
   const rows = useMemo(() => {
@@ -416,6 +541,7 @@ function Receipt({
       ["buyer_is_other", buyer ? (isKnownBuyer(buyer) ? "0" : "1") : "·"],
       ["status", derivedStatus],
       ["user_id", "your account id"],
+      ["ask_terms.exclusivity", exclusivity || "·"],
     ];
     if (mandate.kind === "ready") {
       // The second table an ask with a pinned mandate writes: a fingerprint
@@ -426,7 +552,7 @@ function Receipt({
       );
     }
     return base;
-  }, [title, category, tags, volume, priceBand, pct, buyer, derivedStatus, mandate]);
+  }, [title, category, tags, volume, priceBand, pct, buyer, derivedStatus, exclusivity, mandate]);
 
   return (
     <aside className="hidden lg:block">

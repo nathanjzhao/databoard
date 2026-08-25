@@ -5,8 +5,18 @@
  *   { supplyFilledPct: 0..100 }  adjusts the meter; status follows the number
  *                                (0 open, 1-99 partial, 100 closed).
  *   { close: true }              closes the ask at its current fill.
+ *   { affirm: true, note? }      "Still ongoing": refreshes the 7-day
+ *                                autoclose clock (lib/autoclose.ts); the
+ *                                optional note (200 chars) shows on the ask
+ *                                page as the last update.
  *
- * Reply: { supplyFilledPct, status }
+ * Reply: { supplyFilledPct, status } for supply/close, { affirmedAt } for
+ * affirm.
+ *
+ * Closing, by hand or by reaching 100, records why in ask_closures
+ * (reason 'owner'); the autoclose cron writes 'auto_stale' rows the same
+ * way. A supply update is also an affirmation: touching the meter proves
+ * the poster is alive.
  *
  * Titles and descriptions are not editable after posting: the board is a
  * record of what was asked, not a wiki. Close it and post again.
@@ -15,12 +25,20 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { DbNotConfiguredError, getDb } from "@/lib/db";
+import { recordAskClosure, touchAskActivity } from "@/lib/autoclose";
 import { clampPct, statusForPct } from "@/components/ask/format";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type Body = { supplyFilledPct?: number; close?: boolean };
+const MAX_UPDATE_NOTE = 200;
+
+type Body = {
+  supplyFilledPct?: number;
+  close?: boolean;
+  affirm?: boolean;
+  note?: string;
+};
 
 export async function PATCH(
   request: Request,
@@ -50,12 +68,31 @@ export async function PATCH(
       return NextResponse.json({ error: "Not your ask." }, { status: 403 });
     }
 
+    if (body.affirm === true) {
+      if (String(row.status) === "closed") {
+        return NextResponse.json(
+          { error: "This ask is closed. There is nothing left to affirm." },
+          { status: 409 },
+        );
+      }
+      const note = (body.note ?? "").trim();
+      if (note.length > MAX_UPDATE_NOTE) {
+        return NextResponse.json(
+          { error: `Update note: ${MAX_UPDATE_NOTE} characters max.` },
+          { status: 400 },
+        );
+      }
+      await touchAskActivity(id, note);
+      return NextResponse.json({ affirmedAt: Date.now() });
+    }
+
     if (body.close === true) {
       const pct = clampPct(Number(row.supply_filled_pct));
       await db.execute({
         sql: `UPDATE asks SET status = 'closed' WHERE id = ?`,
         args: [id],
       });
+      if (String(row.status) !== "closed") await recordAskClosure(id, "owner");
       return NextResponse.json({ supplyFilledPct: pct, status: "closed" });
     }
 
@@ -79,6 +116,10 @@ export async function PATCH(
       sql: `UPDATE asks SET supply_filled_pct = ?, status = ? WHERE id = ?`,
       args: [pct, status, id],
     });
+    // Moving the meter is an affirmation; filling it to 100 is an owner
+    // close and gets recorded as one.
+    await touchAskActivity(id);
+    if (status === "closed") await recordAskClosure(id, "owner");
     return NextResponse.json({ supplyFilledPct: pct, status });
   } catch (err) {
     if (err instanceof DbNotConfiguredError) {

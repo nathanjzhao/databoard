@@ -82,6 +82,7 @@ test("01 compose form pins a mandate; ask page says committed with the post", as
   await page.getByLabel("Title").fill(NEW_ASK_TITLE);
   await page.getByLabel("Category").selectOption({ label: "Other" });
   await page.getByLabel("Buying lab").selectOption("Anthropic");
+  await page.getByText("Non-exclusive", { exact: true }).click();
 
   // Pick the mandate document. The bytes stay in the browser; the receipt
   // and the POST body carry only the hash.

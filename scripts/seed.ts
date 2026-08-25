@@ -62,6 +62,17 @@ type AskSeed = {
   buyer: string;
   status: "open" | "partial" | "closed";
   ageDays: number;
+  /** null = legacy ask from before ask_terms; surfaces "terms unspecified". */
+  exclusivity: "exclusive" | "nonexclusive" | null;
+  /**
+   * Affirmation age for the autoclose clock (ask_activity). Defaults to
+   * ageDays (affirmed at posting). Asks older than 7 days that should stay
+   * open carry a fresher affirmation; the one pre-aged ask below keeps its
+   * stale one so the sweep has something real to close in tests.
+   */
+  affirmedDaysAgo?: number;
+  /** Optional "Still ongoing" note, shown on the ask page as last update. */
+  updateNote?: string;
 };
 
 const ASKS: AskSeed[] = [
@@ -78,6 +89,7 @@ const ASKS: AskSeed[] = [
     buyer: "OpenAI",
     status: "partial",
     ageDays: 2,
+    exclusivity: "nonexclusive",
   },
   {
     user: "granite-fox",
@@ -92,6 +104,7 @@ const ASKS: AskSeed[] = [
     buyer: "Anthropic",
     status: "open",
     ageDays: 3,
+    exclusivity: "exclusive",
   },
   {
     user: "midnight-audit",
@@ -106,6 +119,7 @@ const ASKS: AskSeed[] = [
     buyer: "Google DeepMind",
     status: "partial",
     ageDays: 5,
+    exclusivity: "nonexclusive",
   },
   {
     user: "paper-trail",
@@ -120,6 +134,9 @@ const ASKS: AskSeed[] = [
     buyer: "Anthropic",
     status: "closed",
     ageDays: 12,
+    // Legacy ask from before terms existed: no ask_terms row on purpose,
+    // so "terms unspecified" stays a rendered, testable state.
+    exclusivity: null,
   },
   {
     user: "cold-copy",
@@ -134,6 +151,7 @@ const ASKS: AskSeed[] = [
     buyer: "OpenAI",
     status: "open",
     ageDays: 1,
+    exclusivity: "exclusive",
   },
   {
     user: "vellum",
@@ -148,6 +166,7 @@ const ASKS: AskSeed[] = [
     buyer: "Riverbend Data Co-op",
     status: "open",
     ageDays: 4,
+    exclusivity: "nonexclusive",
   },
   {
     user: "quiet-ledger",
@@ -162,6 +181,12 @@ const ASKS: AskSeed[] = [
     buyer: "Meta AI",
     status: "partial",
     ageDays: 8,
+    exclusivity: "exclusive",
+    // Older than the 7-day clock but freshly affirmed, with the note the
+    // ask page shows as "Last update".
+    affirmedDaysAgo: 2,
+    updateNote:
+      "License review cleared two more archives this week. The remaining 65% is still wanted.",
   },
   {
     user: "midnight-audit",
@@ -176,6 +201,7 @@ const ASKS: AskSeed[] = [
     buyer: "Nvidia",
     status: "open",
     ageDays: 6,
+    exclusivity: "nonexclusive",
   },
   {
     user: "granite-fox",
@@ -190,6 +216,8 @@ const ASKS: AskSeed[] = [
     buyer: "Cohere",
     status: "partial",
     ageDays: 9,
+    exclusivity: "exclusive",
+    affirmedDaysAgo: 1,
   },
   {
     user: "cold-copy",
@@ -204,6 +232,25 @@ const ASKS: AskSeed[] = [
     buyer: "Scale AI",
     status: "open",
     ageDays: 0,
+    exclusivity: "nonexclusive",
+  },
+  {
+    // Pre-aged past the 7-day clock with no affirmation since posting:
+    // the ask `npm run autoclose` (or GET /api/cron/autoclose) closes,
+    // so the auto_stale path is exercisable against seed data.
+    user: "paper-trail",
+    title: "Weather-station sensor logs with calibration certificates",
+    category: "domain-corpus",
+    description:
+      "Decade-long logs from private station networks, with per-instrument calibration records so drift can be modeled instead of guessed.",
+    tags: ["sensor", "tabular"],
+    volume: "400 station-years",
+    priceBand: "under $10k",
+    filledPct: 0,
+    buyer: "Cohere",
+    status: "open",
+    ageDays: 10,
+    exclusivity: "nonexclusive",
   },
 ];
 
@@ -403,6 +450,9 @@ async function main() {
     "threads",
     "collab_requests",
     "ask_mandates",
+    "ask_activity",
+    "ask_closures",
+    "ask_terms",
     "asks",
     "sessions",
     "user_e2ee_keys",
@@ -474,6 +524,33 @@ async function main() {
         now() - a.ageDays * day,
       ],
     });
+
+    // Terms, stated with the post like the compose form does. The one null
+    // stays a legacy "terms unspecified" ask.
+    if (a.exclusivity !== null) {
+      await db.execute({
+        sql: `INSERT INTO ask_terms (ask_id, exclusivity) VALUES (?, ?)`,
+        args: [askId, a.exclusivity],
+      });
+    }
+
+    // The autoclose clock. Posting is the first affirmation; a few asks
+    // carry a fresher one (with the note the ask page shows), and the
+    // pre-aged ask keeps its stale posting-time affirmation on purpose.
+    const affirmedAt = now() - (a.affirmedDaysAgo ?? a.ageDays) * day;
+    await db.execute({
+      sql: `INSERT INTO ask_activity (ask_id, affirmed_at, note) VALUES (?, ?, ?)`,
+      args: [askId, affirmedAt, a.updateNote ?? ""],
+    });
+
+    // The seeded closed ask closed the owner way: filled to 100.
+    if (a.status === "closed") {
+      await db.execute({
+        sql: `INSERT INTO ask_closures (ask_id, reason, closed_at) VALUES (?, 'owner', ?)`,
+        args: [askId, now() - a.ageDays * day],
+      });
+    }
+
     console.log(`ask   ${a.title.slice(0, 56)} -> Buyer #${buyerChip(token)}`);
   }
 

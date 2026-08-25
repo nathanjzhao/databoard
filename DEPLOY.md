@@ -14,6 +14,7 @@ Set these on the Vercel project (Production):
 | `TURSO_DATABASE_URL` | `libsql://<db>-<org>.<region>.turso.io`                        |
 | `TURSO_AUTH_TOKEN`   | A database auth token (see Turso setup below)                  |
 | `BLIND_TENDER_DEMO`  | Optional. Unset or `true` = demo mode (verification codes shown in the UI). `false` requires a delivery provider; see "Going live" below. |
+| `CRON_SECRET`        | `openssl rand -hex 32`. Authorizes the autoclose cron (see "Cron: stale-ask autoclose" below). With it set, Vercel sends `Authorization: Bearer <value>` on scheduled invocations; without it, the production cron endpoint answers 503 and no sweep runs. |
 
 If `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN` are absent in production, the app
 deploys and runs but every data-backed page shows a "database not configured"
@@ -184,6 +185,34 @@ Notes:
   login 10 per 5 min per handle and 30 per 5 min per IP, VOPRF evaluate 30
   per min per user. Counters live in the `rate_limits` table keyed by
   `HMAC(SERVER_PEPPER, scope|key)`, so no raw IP or contact is stored.
+
+## Cron: stale-ask autoclose
+
+Open or partial asks whose last affirmation (posting, a supply update, the
+"Still ongoing" button, or a linked deal reaching co-attested) is more than
+7 days old are closed automatically, recorded in `ask_closures` with reason
+`auto_stale`.
+
+The sweep runs three ways, all the same pass (`lib/autoclose.ts`):
+
+- **Vercel cron** (production): `vercel.json` schedules
+  `GET /api/cron/autoclose` daily at 06:00 UTC. Set `CRON_SECRET` on the
+  project; Vercel attaches it as `Authorization: Bearer <CRON_SECRET>` and
+  the route rejects anything else. The schedule activates on the next
+  deployment after `vercel.json` changes.
+- **npm script** (local/ops): `npm run autoclose` runs the pass directly
+  against whatever database the environment points at (add the Turso vars
+  for production, same pattern as the seed).
+- **bare GET in dev/test**: outside production builds the route skips the
+  bearer check so suites can trigger a sweep with a plain fetch.
+
+Sanity check after deploy:
+
+```sh
+curl -s https://<prod-url>/api/cron/autoclose \
+  -H "Authorization: Bearer $CRON_SECRET"     # {"closed":n}
+curl -sI https://<prod-url>/api/cron/autoclose  # 401 without the header
+```
 
 ## Ops: error capture
 

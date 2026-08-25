@@ -21,9 +21,11 @@ import {
   SupplyMeter,
 } from "@/components/ask/meta";
 import { timeAgo } from "@/components/ask/format";
+import { TermsChip } from "@/components/ask/terms";
 import { getSessionUser } from "@/lib/auth";
 import { getDb, isDbConfigured } from "@/lib/db";
 import { ASK_STATUSES, CATEGORIES, unpackTags, type AskStatus } from "@/lib/taxonomy";
+import { isExclusivity, type Exclusivity } from "@/lib/terms";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +43,7 @@ type AskRow = {
   created_at: number;
   username: string;
   has_mandate: number;
+  exclusivity: Exclusivity | null;
 };
 
 const CATEGORY_SLUGS = new Set<string>(CATEGORIES.map((c) => c.slug));
@@ -77,8 +80,10 @@ async function loadBoard(cat: string, status: string) {
                    a.price_band, a.supply_filled_pct, a.buyer_token,
                    a.buyer_is_other, a.status, a.created_at, u.username,
                    EXISTS(SELECT 1 FROM ask_mandates m WHERE m.ask_id = a.id)
-                     AS has_mandate
+                     AS has_mandate,
+                   t.exclusivity
               FROM asks a JOIN users u ON u.id = a.user_id
+              LEFT JOIN ask_terms t ON t.ask_id = a.id
               ${whereSql}
              ORDER BY a.created_at DESC
              LIMIT 200`,
@@ -103,6 +108,7 @@ async function loadBoard(cat: string, status: string) {
     created_at: Number(r.created_at),
     username: String(r.username),
     has_mandate: Number(r.has_mandate),
+    exclusivity: isExclusivity(r.exclusivity) ? r.exclusivity : null,
   }));
 
   const catCounts = new Map(catRs.rows.map((r) => [String(r.category), Number(r.n)]));
@@ -267,6 +273,7 @@ export default async function BoardPage({
                       <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
                         <CategoryTag slug={a.category} dim={closed} />
                         <ModalityTags tags={unpackTags(a.modality_tags)} dim={closed} />
+                        <TermsChip exclusivity={a.exclusivity} dim={closed} />
                         {a.has_mandate === 1 ? <MandateMark dim={closed} /> : null}
                         <span className="font-mono text-[0.6875rem] text-ink-ghost">
                           @{a.username} · {timeAgo(a.created_at, nowMs)}

@@ -216,6 +216,63 @@ CREATE TABLE IF NOT EXISTS ask_mandates (
 );
 
 -- ---------------------------------------------------------------------------
+-- ask_activity
+--
+-- One row per ask: when the poster last affirmed the ask is still live, and
+-- the short update note they typed when they did. Posting seeds the row;
+-- supply updates and the "Still ongoing" button refresh it; a linked deal
+-- reaching co-attested counts as an affirmation too, written here by
+-- lib/deals.ts the moment the last participant settles. An open or partial
+-- ask whose affirmation is more than 7 days old is closed by the autoclose pass
+-- (/api/cron/autoclose) and the closure recorded in ask_closures below.
+--
+-- No PII here: a foreign key, a timestamp, and a free-text note the poster
+-- wrote for display on their own ask page. Same free-text caveat as every
+-- other note column: it is theirs to keep clean.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ask_activity (
+  ask_id      TEXT    PRIMARY KEY REFERENCES asks(id) ON DELETE CASCADE,
+  affirmed_at INTEGER NOT NULL,
+  note        TEXT    NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_ask_activity_affirmed ON ask_activity(affirmed_at);
+
+-- ---------------------------------------------------------------------------
+-- ask_closures
+--
+-- Why a closed ask closed. 'owner' means the poster closed it (or filled it
+-- to 100); 'auto_stale' means the autoclose pass closed it after 7 days
+-- without an affirmation, and the ask page says so in those words. One row
+-- per ask, first writer wins: a closure is a historical fact, not a status
+-- to overwrite. Asks closed before this table existed have no row and are
+-- simply "closed", which is the honest amount of history we have for them.
+--
+-- No PII here: a foreign key, a two-value reason, a timestamp.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ask_closures (
+  ask_id    TEXT    PRIMARY KEY REFERENCES asks(id) ON DELETE CASCADE,
+  reason    TEXT    NOT NULL CHECK (reason IN ('auto_stale', 'owner')),
+  closed_at INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- ask_terms
+--
+-- The one term the board makes posters state up front: whether supply
+-- committed to this ask is exclusive (sold here, not resellable elsewhere)
+-- or non-exclusive (suppliers may reuse it). One row per ask, written with
+-- the post. Asks from before this table have no row and every surface shows
+-- "terms unspecified" rather than guessing.
+--
+-- No PII here: a foreign key and one of two strings.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ask_terms (
+  ask_id      TEXT PRIMARY KEY REFERENCES asks(id) ON DELETE CASCADE,
+  exclusivity TEXT NOT NULL CHECK (exclusivity IN ('exclusive', 'nonexclusive'))
+);
+
+-- ---------------------------------------------------------------------------
 -- collab_requests
 --
 -- Someone reading an ask says "I have some of that". One row per person per
@@ -514,3 +571,4 @@ CREATE TABLE IF NOT EXISTS hidden_asks (
   reason    TEXT    NOT NULL,
   hidden_at INTEGER NOT NULL
 );
+
