@@ -46,6 +46,14 @@ const CLAIMS: ReadonlyArray<{
     files: ["lib/auth.ts (createSession)", "db/schema.sql (sessions)"],
   },
   {
+    claim: "Mandate documents are hashed in the browser, never uploaded",
+    files: [
+      "components/ask/mandate-commit.tsx",
+      "lib/mandates.ts (commitMandate)",
+      "db/schema.sql (ask_mandates)",
+    ],
+  },
+  {
     claim: "The board is gated; this page is not",
     files: ["middleware.ts", "lib/gate.ts (isPublicPath)"],
   },

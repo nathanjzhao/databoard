@@ -30,6 +30,10 @@ const CAN_SEE: ReadonlyArray<readonly [string, string]> = [
     "64 hex characters and a label per commitment; fingerprints of documents, not documents",
   ],
   [
+    "Mandate hashes",
+    "64 hex characters and a label; fingerprints of documents, not documents",
+  ],
+  [
     "Rate-limit buckets",
     "keyed HMAC buckets with counts and window starts; the IP, contact or handle behind a bucket is not stored and not recoverable",
   ],
@@ -56,6 +60,10 @@ const CANNOT_SEE: ReadonlyArray<readonly [string, string]> = [
   [
     "Documents behind evidence hashes",
     "hashed in the participant's browser; the file itself never arrives",
+  ],
+  [
+    "Documents behind mandate hashes",
+    "same construction: hashed in the poster's browser, and there is no upload path for the RFP or email thread to take",
   ],
   [
     "Message text in encrypted threads",

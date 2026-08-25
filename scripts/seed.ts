@@ -22,6 +22,7 @@ import { newId, normalizeContact } from "../lib/crypto.ts";
 import { buyerChip } from "../lib/voprf.ts";
 import { serverMintBuyerTokenV2 } from "../app/api/voprf/server.ts";
 import { isKnownBuyer } from "../lib/buyers.ts";
+import { commitMandate } from "../lib/mandates.ts";
 import { packTags } from "../lib/taxonomy.ts";
 import {
   commitEvidence,
@@ -401,6 +402,7 @@ async function main() {
     "thread_participants",
     "threads",
     "collab_requests",
+    "ask_mandates",
     "asks",
     "sessions",
     "user_e2ee_keys",
@@ -473,6 +475,34 @@ async function main() {
       ],
     });
     console.log(`ask   ${a.title.slice(0, 56)} -> Buyer #${buyerChip(token)}`);
+  }
+
+  // Mandate commitments for two asks, through the REAL write-once path
+  // (lib/mandates.ts), owner check and all. One is backdated to the ask's
+  // own posting time (pinned with the post); the other keeps its true
+  // commit stamp, so the ask page's honesty line demonstrates a visibly
+  // late pin against the backdated posting date.
+  {
+    const withPost = 1; // granite-fox, contested-topic preference pairs
+    const m1 = await commitMandate(askIds[withPost], userIds.get(ASKS[withPost].user)!, {
+      docHash: demoEvidenceHash("demo-mandate: buyer RFP, contested-topic preference pairs, rev 3"),
+      label: "buyer RFP, rev 3, PDF",
+    });
+    if (!m1.ok) throw new Error(`seed mandate (with post): ${m1.error}`);
+    await db.execute({
+      sql: `UPDATE ask_mandates
+               SET committed_at = (SELECT created_at FROM asks WHERE id = ?)
+             WHERE ask_id = ?`,
+      args: [askIds[withPost], askIds[withPost]],
+    });
+
+    const late = 2; // midnight-audit, ERP agent traces, posted days earlier
+    const m2 = await commitMandate(askIds[late], userIds.get(ASKS[late].user)!, {
+      docHash: demoEvidenceHash("demo-mandate: buyer email thread export, ERP agent traces"),
+      label: "buyer email thread export",
+    });
+    if (!m2.ok) throw new Error(`seed mandate (late): ${m2.error}`);
+    console.log("mandates: 2 asks pinned (one with the post, one visibly late)");
   }
 
   for (const d of DEALS) {

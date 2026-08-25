@@ -1,13 +1,13 @@
 /**
  * /transparency/verification
  *
- * The verification story for the deals ledger, publicly reachable like
- * /transparency (lib/gate.ts serves the /transparency/ prefix without a
- * session). One page, one job: state exactly how much a deal tier proves,
- * which is less than anyone wants, and document the rungs above it as
- * research rather than dressing them up as features. Every mechanism named
- * here is either running, or labeled planned with its real maturity and its
- * real limits.
+ * The verification story for the deals ledger and the ask board, publicly
+ * reachable like /transparency (lib/gate.ts serves the /transparency/ prefix
+ * without a session). One page, one job: state exactly how much a tier or a
+ * mark proves, which is less than anyone wants, and document the rungs above
+ * as research rather than dressing them up as features. Every mechanism
+ * named here is either running, or labeled planned with its real maturity
+ * and its real limits.
  */
 
 import type { Metadata } from "next";
@@ -32,10 +32,11 @@ const CONTENTS = [
   ["01", "ladder", "The ladder"],
   ["02", "co-attested", "Co-attested"],
   ["03", "evidence", "Evidence committed"],
-  ["04", "payment", "Payment rails"],
-  ["05", "proofs", "Cryptographic proofs"],
-  ["06", "token", "The buyer token problem"],
-  ["07", "words", "The words"],
+  ["04", "asks", "The ask rungs"],
+  ["05", "payment", "Payment rails"],
+  ["06", "proofs", "Cryptographic proofs"],
+  ["07", "token", "The buyer token problem"],
+  ["08", "words", "The words"],
 ] as const;
 
 /** Why each planned mechanism cannot, on its own, bind a hidden payer to our token. */
@@ -253,8 +254,43 @@ export default function VerificationPage() {
         </TSection>
 
         <TSection
-          id="payment"
+          id="asks"
           num="04"
+          title="The ask rungs"
+          lede="Asks get a shorter ladder than deals: claimed, and mandate committed. An ask is claimed the moment a poster types it. Mandate committed means the poster also pinned the ask to one document, the RFP, MSA or buyer email thread behind it, by committing its SHA-256, hashed in their own browser, write-once, with the commitment date printed next to the posting date."
+        >
+          <p className="max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
+            What a mandate commitment proves: consistency, and ex-post
+            provability. The poster is pinned to one document before anyone
+            engages (or visibly after; a late pin carries its own date), and
+            a counterparty later shown a document that does not hash to the
+            commitment has receipts. What it does not prove: authenticity or
+            authority. The poster can hash any file they like, and a genuine
+            RFP does not make the person holding it entitled to buy on its
+            terms. This is why the mark reads &quot;mandate committed&quot;
+            and never &quot;verified&quot;, on the board, on the ask page,
+            and here.
+          </p>
+          <p className="mt-3 max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
+            Two stronger rungs are planned, not shipped, because each has a
+            hole we will not paper over. DKIM-proved artifacts: an email
+            carries its sending domain&apos;s signature, and checking it
+            could prove a mandate email really transited the buyer&apos;s
+            mail servers, but any employee of that domain can send a signed
+            email, so it would prove provenance, not purchasing authority.
+            Buyer co-attestation: an account of the buyer&apos;s
+            counter-signing the mandate would outrank a self-committed hash,
+            but until buyer accounts are bound to a legal entity, that
+            signature is another envelope the poster could have sealed
+            themselves, because pseudonymous accounts are cheap to mint.
+            Both stay in this section, as plans with their holes printed,
+            until they exist.
+          </p>
+        </TSection>
+
+        <TSection
+          id="payment"
+          num="05"
           title="Planned: payment rails"
           lede="The next rung up is money: independent evidence that funds posted or were released, bound to one specific deal. Nothing in this section is built. Time estimates are engineering guesses that exclude vendor approval, security audits, and legal review, which is where such estimates usually go to die."
         >
@@ -278,7 +314,7 @@ export default function VerificationPage() {
 
         <TSection
           id="proofs"
-          num="05"
+          num="06"
           title="Planned: cryptographic proofs"
           lede="Cryptography can move parts of this from trust-the-platform to check-the-math. The tooling is real and moving quickly, and much of it is not production-grade; the maturity chips below repeat what the projects say about themselves, not what their landing pages imply."
         >
@@ -287,7 +323,7 @@ export default function VerificationPage() {
 
         <TSection
           id="token"
-          num="06"
+          num="07"
           title="The buyer token problem"
           lede="The honest negative result, and the reason a payer-bound rung is future work rather than a sprint. None of the mechanisms above can produce our buyer token from a hidden payer on its own."
         >
@@ -376,7 +412,7 @@ export default function VerificationPage() {
 
         <TSection
           id="words"
-          num="07"
+          num="08"
           title="The words"
           lede="One vocabulary, used identically on the deal pages, the leaderboard, and here, so that a tier name is a commitment you can hold us to rather than a mood."
         >
