@@ -16,11 +16,13 @@ import { StatusMark } from "@/components/ask/meta";
 import { timeAgo } from "@/components/ask/format";
 import { CollabPanel } from "@/components/ask/collab-button";
 import { DealPeople, type DealPerson } from "@/components/ask/deal-people";
+import { MandateBlock, MandateCommit } from "@/components/ask/mandate-commit";
 import { OwnerControls } from "@/components/ask/owner-controls";
 import { HideControl } from "@/components/admin/hide-control";
 import { ModerationBanner } from "@/components/admin/moderation-banner";
 import { getSessionUser } from "@/lib/auth";
 import { getDb, isDbConfigured } from "@/lib/db";
+import { getMandate } from "@/lib/mandates";
 import { getHiddenInfo, isOperator } from "@/lib/moderation";
 import { categoryLabel, unpackTags, type AskStatus } from "@/lib/taxonomy";
 import { buyerChip } from "@/lib/voprf";
@@ -105,9 +107,10 @@ export default async function AskDetailPage({
 
   // A hidden ask is a 404 to everyone except its poster (who gets the page
   // with the reason on it) and operators (who get the same plus unhide).
-  const [hiddenInfo, operator] = await Promise.all([
+  const [hiddenInfo, operator, mandate] = await Promise.all([
     getHiddenInfo(ask.id),
     isOperator(user.id),
+    getMandate(ask.id),
   ]);
   if (hiddenInfo && !mine && !operator) notFound();
 
@@ -305,6 +308,21 @@ export default async function AskDetailPage({
               ) : null}
             </div>
           </div>
+
+          {/* mandate: the committed record for everyone, or the owner's
+              add-later panel. A non-owner looking at an unpinned ask sees
+              nothing, because there is nothing to show. */}
+          {mandate ? (
+            <MandateBlock
+              docHash={mandate.docHash}
+              label={mandate.label}
+              committedAt={mandate.committedAt}
+              postedAt={ask.created_at}
+              nowMs={nowMs}
+            />
+          ) : mine ? (
+            <MandateCommit askId={ask.id} />
+          ) : null}
 
           {/* lifecycle or collab */}
           {mine ? (

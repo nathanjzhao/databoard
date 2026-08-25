@@ -15,6 +15,7 @@ import { DbNotConfiguredNotice, PageStub } from "@/components/page-stub";
 import {
   BuyerChip,
   CategoryTag,
+  MandateMark,
   ModalityTags,
   StatusMark,
   SupplyMeter,
@@ -39,6 +40,7 @@ type AskRow = {
   status: AskStatus;
   created_at: number;
   username: string;
+  has_mandate: number;
 };
 
 const CATEGORY_SLUGS = new Set<string>(CATEGORIES.map((c) => c.slug));
@@ -73,7 +75,9 @@ async function loadBoard(cat: string, status: string) {
     db.execute({
       sql: `SELECT a.id, a.title, a.category, a.modality_tags, a.volume,
                    a.price_band, a.supply_filled_pct, a.buyer_token,
-                   a.buyer_is_other, a.status, a.created_at, u.username
+                   a.buyer_is_other, a.status, a.created_at, u.username,
+                   EXISTS(SELECT 1 FROM ask_mandates m WHERE m.ask_id = a.id)
+                     AS has_mandate
               FROM asks a JOIN users u ON u.id = a.user_id
               ${whereSql}
              ORDER BY a.created_at DESC
@@ -98,6 +102,7 @@ async function loadBoard(cat: string, status: string) {
     status: (STATUS_SET.has(String(r.status)) ? String(r.status) : "open") as AskStatus,
     created_at: Number(r.created_at),
     username: String(r.username),
+    has_mandate: Number(r.has_mandate),
   }));
 
   const catCounts = new Map(catRs.rows.map((r) => [String(r.category), Number(r.n)]));
@@ -262,6 +267,7 @@ export default async function BoardPage({
                       <div className="mt-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
                         <CategoryTag slug={a.category} dim={closed} />
                         <ModalityTags tags={unpackTags(a.modality_tags)} dim={closed} />
+                        {a.has_mandate === 1 ? <MandateMark dim={closed} /> : null}
                         <span className="font-mono text-[0.6875rem] text-ink-ghost">
                           @{a.username} · {timeAgo(a.created_at, nowMs)}
                         </span>

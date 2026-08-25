@@ -22,6 +22,7 @@ import { BUYER_OPTIONS, OTHER_BUYER, isKnownBuyer } from "@/lib/buyers";
 import { mintBuyerTokenV2 } from "@/lib/voprf";
 import { CATEGORIES, MODALITIES, PRICE_BANDS, packTags } from "@/lib/taxonomy";
 import { statusForPct } from "@/components/ask/format";
+import { MandatePin, type MandatePinState } from "@/components/ask/mandate-commit";
 
 const RANGE_CLASS = [
   "w-full cursor-pointer appearance-none bg-transparent focus:outline-none",
@@ -58,6 +59,7 @@ export function AskForm() {
   const [pct, setPct] = useState(0);
   const [buyerChoice, setBuyerChoice] = useState("");
   const [buyerOther, setBuyerOther] = useState("");
+  const [mandate, setMandate] = useState<MandatePinState>({ kind: "none" });
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,8 +68,14 @@ export function AskForm() {
     buyerChoice === OTHER_BUYER ? buyerOther.trim() : buyerChoice;
   const derivedStatus = statusForPct(pct);
 
+  // A hashed-but-unlabeled mandate blocks posting instead of being dropped
+  // silently; the pin section says so next to the label field.
   const ready =
-    title.trim().length >= 8 && category !== "" && buyer.length > 0 && !busy;
+    title.trim().length >= 8 &&
+    category !== "" &&
+    buyer.length > 0 &&
+    mandate.kind !== "incomplete" &&
+    !busy;
 
   function toggleTag(t: string) {
     setTags((prev) =>
@@ -99,6 +107,10 @@ export function AskForm() {
           supplyFilledPct: pct,
           buyerTokenV2,
           buyerIsOther: !isKnownBuyer(buyer),
+          mandate:
+            mandate.kind === "ready"
+              ? { docHash: mandate.docHash, label: mandate.label }
+              : undefined,
         }),
       });
       const data = await res.json();
@@ -304,6 +316,11 @@ export function AskForm() {
           </p>
         </Section>
 
+        {/* ---------------------------------------------- 05 · the mandate */}
+        <Section n="05" heading="Pin a mandate document">
+          <MandatePin onChange={setMandate} />
+        </Section>
+
         {/* --------------------------------------------------------- submit */}
         {error ? (
           <div className="border-l-2 border-red bg-red-wash px-4 py-3 text-[0.8125rem] text-ink">
@@ -335,6 +352,7 @@ export function AskForm() {
         pct={pct}
         buyer={buyer}
         derivedStatus={derivedStatus}
+        mandate={mandate}
       />
     </div>
   );
@@ -374,6 +392,7 @@ function Receipt({
   pct,
   buyer,
   derivedStatus,
+  mandate,
 }: {
   title: string;
   category: string;
@@ -383,23 +402,31 @@ function Receipt({
   pct: number;
   buyer: string;
   derivedStatus: string;
+  mandate: MandatePinState;
 }) {
-  const rows = useMemo(
-    () =>
-      [
-        ["title", title.trim() || "·"],
-        ["category", category || "·"],
-        ["modality_tags", packTags(tags) || "·"],
-        ["volume", volume.trim() || "·"],
-        ["price_band", priceBand],
-        ["supply_filled_pct", String(pct)],
-        ["buyer_token", buyer ? "v2:???? · blinded in this tab" : "·"],
-        ["buyer_is_other", buyer ? (isKnownBuyer(buyer) ? "0" : "1") : "·"],
-        ["status", derivedStatus],
-        ["user_id", "your account id"],
-      ] as const,
-    [title, category, tags, volume, priceBand, pct, buyer, derivedStatus],
-  );
+  const rows = useMemo(() => {
+    const base: [string, string][] = [
+      ["title", title.trim() || "·"],
+      ["category", category || "·"],
+      ["modality_tags", packTags(tags) || "·"],
+      ["volume", volume.trim() || "·"],
+      ["price_band", priceBand],
+      ["supply_filled_pct", String(pct)],
+      ["buyer_token", buyer ? "v2:???? · blinded in this tab" : "·"],
+      ["buyer_is_other", buyer ? (isKnownBuyer(buyer) ? "0" : "1") : "·"],
+      ["status", derivedStatus],
+      ["user_id", "your account id"],
+    ];
+    if (mandate.kind === "ready") {
+      // The second table an ask with a pinned mandate writes: a fingerprint
+      // and a caption. The document stays where it is.
+      base.push(
+        ["ask_mandates.doc_hash", `${mandate.docHash.slice(0, 12)}… · hashed in this tab`],
+        ["ask_mandates.label", mandate.label],
+      );
+    }
+    return base;
+  }, [title, category, tags, volume, priceBand, pct, buyer, derivedStatus, mandate]);
 
   return (
     <aside className="hidden lg:block">

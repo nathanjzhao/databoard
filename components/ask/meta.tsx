@@ -110,6 +110,29 @@ export function BuyerChip({
   );
 }
 
+/* --------------------------------------------------------- mandate mark */
+
+/**
+ * A small grayscale mark for board rows whose ask carries a mandate
+ * commitment. Deliberately colorless: a committed hash is a pin, not a
+ * verification, and the mark must not read as a badge of anything more.
+ */
+export function MandateMark({ dim = false }: { dim?: boolean }) {
+  return (
+    <span
+      className={[
+        "inline-flex items-center border px-1.5 py-0.5 font-mono text-[0.5625rem] uppercase tracking-[0.1em]",
+        dim
+          ? "border-rule text-ink-ghost"
+          : "border-rule-strong text-ink-faint",
+      ].join(" ")}
+      title="Mandate committed: the poster pinned this ask to one document by its SHA-256. Consistency, not authenticity."
+    >
+      mandate
+    </span>
+  );
+}
+
 /* ---------------------------------------------------------- status mark */
 
 const STATUS_STYLE: Record<AskStatus, { dot: string; text: string }> = {
