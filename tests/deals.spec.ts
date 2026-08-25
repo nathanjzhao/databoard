@@ -897,6 +897,7 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
   );
   const tables = tablesRs.rows.map((r) => String(r.name));
   expect(tables.sort()).toEqual([
+    "ask_mandates",
     "asks",
     "collab_requests",
     "deal_participants",

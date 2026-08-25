@@ -406,6 +406,7 @@ test("09 THE PRIVACY CLAIM: no PII string appears in any row of any table", asyn
   );
   const tables = tablesRs.rows.map((r) => String(r.name));
   expect(tables.sort()).toEqual([
+    "ask_mandates",
     "asks",
     "collab_requests",
     "deal_participants",
