@@ -692,6 +692,17 @@ test("06 STANDING: 60-day-old outstanding accruals block Y from posting; dispute
   ).toBeVisible();
   await shot(page, "invites-y-post-blocked.png");
 
+  // The block is the SERVER's, not the UI's: the APIs refuse directly.
+  // (page.request rides Y's session cookies.)
+  const dealApi = await page.request.post("/api/deals", {
+    data: { buyerToken: "v2:" + "0".repeat(128), totalValueUsd: 1000, note: "", participants: [] },
+  });
+  expect(dealApi.status()).toBe(403);
+  expect((await dealApi.json()).error).toContain("behind on referral obligations");
+  const mintApi = await page.request.post("/api/invites", { data: {} });
+  expect(mintApi.status()).toBe(403);
+  expect((await mintApi.json()).error).toContain("behind on referral obligations");
+
   // Disputing the X pair alone is not enough: quiet-ledger's $25 still gates.
   await page.goto("/invites");
   const [d1] = await Promise.all([

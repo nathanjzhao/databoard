@@ -12,6 +12,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { DbNotConfiguredError } from "@/lib/db";
 import { MAX_UNUSED_INVITES, mintInvite } from "@/lib/invites";
+import { settlementStanding } from "@/lib/referrals";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,6 +22,18 @@ export async function POST() {
   if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
 
   try {
+    // Behind on referral obligations means no growing the tree either: the
+    // same standing gate that blocks asks and deals blocks minting.
+    const standing = await settlementStanding(user.id);
+    if (standing.behind) {
+      return NextResponse.json(
+        {
+          error:
+            "This account is behind on referral obligations. Settle or dispute them on the invites page first.",
+        },
+        { status: 403 },
+      );
+    }
     const minted = await mintInvite(user.id);
     if (!minted.ok) {
       return NextResponse.json(
