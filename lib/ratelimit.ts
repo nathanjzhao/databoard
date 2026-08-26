@@ -28,6 +28,7 @@
  *
  * The limits, in one place:
  *   request-code        5 / 10 min per contact,  20 / 10 min per IP
+ *   invite-check       10 / 10 min per IP
  *   verify-and-signup  10 / 10 min per IP
  *   login              10 /  5 min per handle,   30 /  5 min per IP
  *   voprf evaluate     30 /  1 min per user
@@ -53,6 +54,10 @@ export const RATE_LIMITS = {
   // signup rush at a demo: 10/10min proved too tight the day the test
   // suite got fast enough to be such a rush.
   requestCodePerIp: { scope: "otp-ip", limit: 60, windowMs: 10 * 60_000 },
+  // Invite codes are 96 bits of server-minted randomness, so this cap is
+  // anti-annoyance, not the security boundary: guessing is hopeless at any
+  // request rate the limiter would ever see.
+  inviteCheckPerIp: { scope: "invite-check", limit: 10, windowMs: 10 * 60_000 },
   signupPerIp: { scope: "signup-ip", limit: 30, windowMs: 10 * 60_000 },
   loginPerHandle: { scope: "login-handle", limit: 10, windowMs: 5 * 60_000 },
   loginPerIp: { scope: "login-ip", limit: 30, windowMs: 5 * 60_000 },

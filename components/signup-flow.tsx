@@ -41,6 +41,7 @@ export function SignupFlow() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [inviteCode, setInviteCode] = useState("");
   const [realName, setRealName] = useState("");
   const [independent, setIndependent] = useState(false);
   const [orgName, setOrgName] = useState("");
@@ -62,7 +63,12 @@ export function SignupFlow() {
       const res = await fetch("/api/auth/request-code", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ contact, realName, affiliation }),
+        body: JSON.stringify({
+          inviteCode: inviteCode.trim(),
+          contact,
+          realName,
+          affiliation,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Could not send a code.");
@@ -96,6 +102,7 @@ export function SignupFlow() {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          inviteCode: inviteCode.trim(),
           contact,
           realName,
           affiliation,
@@ -127,6 +134,7 @@ export function SignupFlow() {
         // Registration retries on the next login; signup itself stands.
       }
       // Nothing below survives on the server; drop it here too.
+      setInviteCode("");
       setContact("");
       setRealName("");
       setOrgName("");
@@ -160,10 +168,26 @@ export function SignupFlow() {
           </p>
           <form onSubmit={requestCode} className="mt-7 space-y-4">
             <label className="block">
+              <span className="bt-label">Invite code</span>
+              <input
+                className="bt-input mt-2 font-mono"
+                autoFocus
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="inv_..."
+                value={inviteCode}
+                onChange={(e) => setInviteCode(e.target.value)}
+              />
+              <p className="mt-2 text-[0.75rem] text-ink-faint">
+                The board is invite-only. A member minted this code for you;
+                it is checked before anything else you type here is read.
+              </p>
+            </label>
+
+            <label className="block">
               <span className="bt-label">Real name</span>
               <input
                 className="bt-input mt-2"
-                autoFocus
                 autoComplete="name"
                 placeholder="Ada Lovelace"
                 value={realName}
@@ -235,6 +259,7 @@ export function SignupFlow() {
               type="submit"
               disabled={
                 busy ||
+                inviteCode.trim().length < 4 ||
                 realName.trim().length < 2 ||
                 contact.trim().length < 5 ||
                 (!independent && orgName.trim().length < 2)

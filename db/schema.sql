@@ -572,3 +572,49 @@ CREATE TABLE IF NOT EXISTS hidden_asks (
   hidden_at INTEGER NOT NULL
 );
 
+-- ---------------------------------------------------------------------------
+-- invites
+--
+-- The board is invite-only: signup consumes exactly one unused code, minted
+-- server-side ("inv_" + 24 hex) by an existing member on /invites. A member
+-- may hold at most 5 unused codes at a time (operators are uncapped);
+-- consumption is a single guarded UPDATE, so a code raced by two signups is
+-- spent exactly once and the loser is told so.
+--
+-- No PII here: a random code, two user ids that resolve to handles and
+-- nothing else, and timestamps. A code says WHO vouched, never who anyone
+-- is. Who-invited-whom is shown only to the two accounts on the edge and to
+-- operators; it is stored, it is not public, and /transparency says so.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS invites (
+  code       TEXT    PRIMARY KEY,
+  inviter_id TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  used_by    TEXT    REFERENCES users(id),
+  used_at    INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_invites_inviter ON invites(inviter_id);
+CREATE INDEX IF NOT EXISTS idx_invites_used_by ON invites(used_by);
+
+-- ---------------------------------------------------------------------------
+-- invite_edges
+--
+-- The permanent genealogy: one row per invited account, written in the same
+-- transaction that consumes the invite. It exists separately from invites
+-- because that table cascades away with a deleted inviter, and the referral
+-- ledger (lib/referrals.ts) needs the chain to outlive any single account's
+-- housekeeping. Accounts from before invites existed simply have no row.
+--
+-- No PII here: same shape as invites. Visible only to the two accounts on
+-- the edge and to operators, never on a public surface.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS invite_edges (
+  user_id     TEXT    PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  inviter_id  TEXT    NOT NULL REFERENCES users(id),
+  invite_code TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_invite_edges_inviter ON invite_edges(inviter_id);
+

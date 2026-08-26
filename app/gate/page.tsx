@@ -33,7 +33,8 @@ export default async function GatePage() {
       {/* one line, two doors */}
       <div className="mt-[clamp(1.25rem,3.5vh,2.25rem)] grid gap-x-8 gap-y-7 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)] lg:items-center">
         <p className="text-[clamp(1.125rem,1.7vw,1.4375rem)] font-medium leading-snug tracking-[-0.01em] text-ink">
-          A pseudonymous board for data asks. We keep only an assigned handle.{" "}
+          A pseudonymous, invite-only board for data asks. We keep only an
+          assigned handle.{" "}
           <Link
             href="/transparency"
             className="font-normal text-ink-dim underline underline-offset-4 transition-colors hover:text-ink"

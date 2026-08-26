@@ -1,7 +1,8 @@
 /**
  * POST /api/auth/verify-and-signup
  *
- * Body:  { contact, realName, affiliation, code, challenge, username, password }
+ * Body:  { inviteCode, contact, realName, affiliation, code, challenge,
+ *          username, password }
  * Reply: { username, accountType } and sets the session cookie.
  *
  * The one round trip where the attested fields come back. The server
@@ -10,6 +11,13 @@
  * issued against. Then it persists ONLY: username, scrypt(password),
  * account_type, and HMAC(contact). realName and affiliation die with this
  * request. Nothing is logged.
+ *
+ * Invite-only: the invite code request-code already validated is SPENT here,
+ * by one guarded UPDATE (used_by IS NULL), after the account row exists so
+ * used_by can reference it. A code raced by two signups is spent once; the
+ * losing request deletes its seconds-old, referenced-by-nothing user row and
+ * reports the code taken. Consuming writes the permanent invite_edges row in
+ * the same transaction.
  *
  * Rate limit (lib/ratelimit.ts): 10 attempts / 10 min per IP, counted in an
  * HMAC bucket so the IP is never stored raw.
@@ -32,7 +40,8 @@ import {
   usernameTaken,
 } from "@/lib/auth";
 import { passwordProblem } from "@/lib/crypto";
-import { DbNotConfiguredError } from "@/lib/db";
+import { checkInviteCode, consumeInvite } from "@/lib/invites";
+import { DbNotConfiguredError, getDb } from "@/lib/db";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,6 +56,7 @@ const VERIFY_ERRORS: Record<string, string> = {
 
 export async function POST(request: Request) {
   let body: {
+    inviteCode?: string;
     contact?: string;
     realName?: string;
     affiliation?: string;
@@ -93,6 +103,21 @@ export async function POST(request: Request) {
   }
 
   try {
+    // Invite-only: refuse before creating anything when the code is already
+    // gone. The atomic spend happens after the user row exists.
+    const inviteState = await checkInviteCode(body.inviteCode ?? "");
+    if (inviteState !== "ok") {
+      return NextResponse.json(
+        {
+          error:
+            inviteState === "used"
+              ? "That invite code has been used."
+              : "That invite code is not one we issued.",
+        },
+        { status: 400 },
+      );
+    }
+
     // The handle is assigned, never chosen (lib/handles.ts): a chosen name is
     // the one field a person could use to point back at themselves.
     let handle = generateHandle();
@@ -115,6 +140,22 @@ export async function POST(request: Request) {
             ? "That username is taken."
             : "That username will not work.";
       return NextResponse.json({ error: message }, { status: 409 });
+    }
+
+    // Spend the code and write the genealogy edge, one guarded transaction.
+    // A lost race deletes the seconds-old user row (nothing references it
+    // yet: no session, no keys, no content) and reports the code taken.
+    const consumed = await consumeInvite(body.inviteCode ?? "", created.user.id);
+    if (!consumed.ok) {
+      const db = await getDb();
+      await db.execute({
+        sql: `DELETE FROM users WHERE id = ?`,
+        args: [created.user.id],
+      });
+      return NextResponse.json(
+        { error: "That invite code was claimed a moment ago by someone else." },
+        { status: 409 },
+      );
     }
 
     const session = await createSession(created.user.id);
