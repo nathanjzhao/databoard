@@ -49,6 +49,10 @@ next-env.d.ts
 # blind tender: generated from db/schema.sql before dev/build/seed
 /lib/schema.generated.ts
 
+# blind tender: served-JS hash manifest, written after next build
+# (scripts/gen-js-manifest.mjs); per-build, so never committed
+/lib/js-manifest.generated.json
+
 # proof-run screenshots and playwright output
 /verify/
 /test-results/

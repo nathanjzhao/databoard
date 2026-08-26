@@ -35,6 +35,16 @@ jobs:
       - name: Build
         run: npm run build
 
+      # The served-JS hash manifest for this exact commit, one per build.
+      # Never committed (hashes are per-build); auditors diff it against the
+      # manifest the deployed site serves at /api/transparency/js-manifest.
+      - name: Upload served-JS hash manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-manifest-sha256-${{ github.sha }}
+          path: .next/build-manifest.sha256.json
+          retention-days: 90
+
       - name: Install Playwright chromium
         run: npx playwright install --with-deps chromium
 

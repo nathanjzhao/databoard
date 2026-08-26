@@ -99,6 +99,35 @@ curl -s -X POST https://<prod-url>/api/auth/login \
   -d '{"username":"quiet-ledger","password":"demo-demo-demo"}'   # {"username":"quiet-ledger"}
 ```
 
+## Verify served JS
+
+Every build hashes the static assets it will serve: `npm run build` runs
+`scripts/gen-js-manifest.mjs` after `next build`, which walks `.next/static/`
+and writes the same manifest to two places: `.next/build-manifest.sha256.json`
+(CI uploads it as the workflow artifact `build-manifest-sha256-<commit sha>`,
+kept 90 days, never committed) and `lib/js-manifest.generated.json`
+(gitignored; the deployment serves it at `/api/transparency/js-manifest`).
+Entries are `{path, sha256, bytes}` under the `/_next/static/` prefix.
+
+Check a deployment against its own manifest:
+
+```sh
+scripts/verify-served-js.sh https://<prod-url>          # 8 sampled bundles
+scripts/verify-served-js.sh https://<prod-url> 20       # 20 samples
+scripts/verify-served-js.sh https://<prod-url> all      # every file
+scripts/verify-served-js.sh http://localhost:3963       # a local next start
+```
+
+The script fetches the manifest, downloads the sampled bundles, and compares
+SHA-256 and byte count; any mismatch exits nonzero.
+
+What a pass proves, exactly: the static JS the server hands out matches the
+manifest the same server published. A lying server could publish a manifest
+of its lies. Step two is what makes it third-party: take the commit sha
+stamped in the site footer, download the `build-manifest-sha256-<sha>`
+artifact from that commit's public CI run, and diff it against the manifest
+the site serves. Both steps are also spelled out on /transparency.
+
 ## Going live (real OTP delivery)
 
 Demo mode shows the verification code on screen. Going live means the code is

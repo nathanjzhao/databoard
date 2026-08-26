@@ -187,6 +187,27 @@ export default async function TransparencyPage() {
                       reads the live database to confirm the running schema is
                       the published one.
                     </li>
+                    <li>
+                      Every static JS and CSS file this deployment serves is
+                      hashed right after the build into a manifest served at{" "}
+                      <a
+                        href="/api/transparency/js-manifest"
+                        className="font-mono text-blue hover:text-amber"
+                      >
+                        /api/transparency/js-manifest
+                      </a>
+                      ; scripts/verify-served-js.sh in the repo fetches it,
+                      samples the bundles, and compares SHA-256 and byte
+                      counts. Said precisely, that step proves the static JS
+                      you are served matches the manifest the same server
+                      published, no more. The second step is what makes it
+                      third-party: every CI run uploads the manifest for its
+                      commit as a public workflow artifact, so you can fetch
+                      the artifact for the commit stamped in the footer and
+                      diff it against the manifest the site serves. A server
+                      lying about its JS would have to get its lie into the
+                      repo&apos;s own CI to survive both steps.
+                    </li>
                   </ul>
                 </div>
               </li>
