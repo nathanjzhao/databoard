@@ -57,6 +57,7 @@ const MEMBER_ROUTES = [
   "/deals",
   "/deals/new",
   "/leaderboard",
+  "/invites",
 ] as const;
 
 /** The nav links a signed-in member must be able to reach at 390px. */
@@ -67,6 +68,7 @@ const NAV_LINKS = [
   { href: "/messages", label: "Messages" },
   { href: "/deals", label: "Deals" },
   { href: "/leaderboard", label: "Leaderboard" },
+  { href: "/invites", label: "Invites" },
   { href: "/transparency", label: "Transparency" },
 ] as const;
 

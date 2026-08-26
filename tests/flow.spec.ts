@@ -25,6 +25,7 @@ import { createClient } from "@libsql/client";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { KNOWN_BUYERS } from "../lib/buyers";
+import { unusedInviteCode } from "./invite-codes";
 
 const ROOT = path.resolve(__dirname, "..");
 const VERIFY_DIR = path.join(ROOT, "verify");
@@ -101,6 +102,9 @@ async function signUp(
   await p.goto("/signup");
   await expect(p.getByText("Say who you are, once")).toBeVisible();
 
+  // Invite-only: a seeded member's unused code, read from the local DB the
+  // way the spec already reads everything else.
+  await p.getByLabel("Invite code").fill(await unusedInviteCode());
   await p.getByLabel("Real name").fill(opts.realName);
   if (opts.org) {
     await p.getByRole("button", { name: "An organization" }).click();
@@ -416,10 +420,14 @@ test("09 THE PRIVACY CLAIM: no PII string appears in any row of any table", asyn
     "deal_participants",
     "deals",
     "hidden_asks",
+    "invite_edges",
+    "invites",
     "messages",
     "operators",
     "ops_errors",
     "rate_limits",
+    "referral_disputes",
+    "referral_settlements",
     "sessions",
     "thread_keys",
     "thread_participants",

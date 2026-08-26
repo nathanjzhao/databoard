@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { KNOWN_BUYERS } from "../lib/buyers";
+import { unusedInviteCode } from "./invite-codes";
 
 const ROOT = path.resolve(__dirname, "..");
 const VERIFY_DIR = path.join(ROOT, "verify", "deals");
@@ -127,6 +128,8 @@ async function signUp(
 ) {
   await p.goto("/signup");
   await expect(p.getByText("Say who you are, once")).toBeVisible();
+  // Invite-only: a seeded member's unused code, read from the local DB.
+  await p.getByLabel("Invite code").fill(await unusedInviteCode());
   await p.getByLabel("Real name").fill(opts.realName);
   if (opts.org) {
     await p.getByRole("button", { name: "An organization" }).click();
@@ -906,10 +909,14 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     "deal_participants",
     "deals",
     "hidden_asks",
+    "invite_edges",
+    "invites",
     "messages",
     "operators",
     "ops_errors",
     "rate_limits",
+    "referral_disputes",
+    "referral_settlements",
     "sessions",
     "thread_keys",
     "thread_participants",

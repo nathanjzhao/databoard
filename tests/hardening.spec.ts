@@ -33,6 +33,7 @@
 import { test, expect, request as pwRequest, type APIRequestContext, type BrowserContext, type Page } from "@playwright/test";
 import { createClient } from "@libsql/client";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { unusedInviteCode } from "./invite-codes";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -308,12 +309,24 @@ test.describe("rate limits", () => {
     baseURL,
   }) => {
     const ctx = await xffContext(baseURL!, XFF_OTP);
+    const inviteCode = await unusedInviteCode();
     try {
+      // Invite gate first: without a code the route refuses at 400 before
+      // any limiter or contact logic runs. Proves the gate is actually on.
+      const gated = await burst(
+        ctx,
+        "/api/auth/request-code",
+        { contact: HAMMER_CONTACT_A, realName: "Hammer Proof", affiliation: "Hammer Lab" },
+        1,
+      );
+      expect(gated[0].status).toBe(400);
+      expect(gated[0].error).toMatch(/invite code/i);
+
       // Limit is 5/10min per contact. Five pass, the sixth trips.
       const hits = await burst(
         ctx,
         "/api/auth/request-code",
-        { contact: HAMMER_CONTACT_A, realName: "Hammer Proof", affiliation: "Hammer Lab" },
+        { inviteCode, contact: HAMMER_CONTACT_A, realName: "Hammer Proof", affiliation: "Hammer Lab" },
         6,
       );
       for (const h of hits.slice(0, 5)) expect(h.status).toBe(200);
@@ -329,7 +342,7 @@ test.describe("rate limits", () => {
       const other = await burst(
         ctx,
         "/api/auth/request-code",
-        { contact: HAMMER_CONTACT_B, realName: "Hammer Proof", affiliation: "Hammer Lab" },
+        { inviteCode, contact: HAMMER_CONTACT_B, realName: "Hammer Proof", affiliation: "Hammer Lab" },
         1,
       );
       expect(other[0].status).toBe(200);
@@ -345,11 +358,12 @@ test.describe("rate limits", () => {
     // previous test's detector distinguishes tripped from not-tripped
     // instead of passing on anything.
     const ctx = await xffContext(baseURL!, XFF_CONTROL);
+    const inviteCode = await unusedInviteCode();
     try {
       const hits = await burst(
         ctx,
         "/api/auth/request-code",
-        { contact: CONTROL_CONTACT, realName: "Hammer Proof", affiliation: "Hammer Lab" },
+        { inviteCode, contact: CONTROL_CONTACT, realName: "Hammer Proof", affiliation: "Hammer Lab" },
         4,
       );
       expect(hits.filter((h) => h.status === 429)).toEqual([]);
@@ -425,6 +439,9 @@ test.describe("non-demo OTP, test-capture transport", () => {
 
     await page.goto(`http://localhost:${CAPTURE_PORT}/signup`);
     await expect(page.getByText("Say who you are, once")).toBeVisible();
+    // Invite-only: the spawned server shares data/app.db, so a seeded
+    // member's unused code works here too.
+    await page.getByLabel("Invite code").fill(await unusedInviteCode());
     await page.getByLabel("Real name").fill("Olive Proof");
     await page.getByRole("button", { name: "An organization" }).click();
     await page.getByPlaceholder("Org name").fill("Hardening Proof Lab");
@@ -502,6 +519,7 @@ test.describe("non-demo OTP, no provider configured", () => {
     try {
       const res = await ctx.post("/api/auth/request-code", {
         data: {
+          inviteCode: await unusedInviteCode(),
           contact: NO_PROVIDER_EMAIL,
           realName: "Nadia Proof",
           affiliation: "Hardening Proof Lab",
@@ -524,6 +542,7 @@ test.describe("non-demo OTP, no provider configured", () => {
     const page = await context.newPage();
     page.setDefaultNavigationTimeout(60_000);
     await page.goto(`http://localhost:${NO_PROVIDER_PORT}/signup`);
+    await page.getByLabel("Invite code").fill(await unusedInviteCode());
     await page.getByLabel("Real name").fill("Nadia Proof");
     await page.getByRole("button", { name: "An organization" }).click();
     await page.getByPlaceholder("Org name").fill("Hardening Proof Lab");
