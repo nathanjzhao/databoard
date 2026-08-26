@@ -29,6 +29,7 @@
 
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
+import { settlementStanding } from "@/lib/referrals";
 import { DbNotConfiguredError, getDb, now } from "@/lib/db";
 import { newId } from "@/lib/crypto";
 import { isBuyerTokenV2 } from "@/lib/voprf";
@@ -118,6 +119,27 @@ function problem(body: Body): string | null {
 export async function POST(request: Request) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
+
+  // Referral standing gate (lib/referrals.ts): an account more than 60 days
+  // behind on referral obligations cannot post until it settles or disputes.
+  // Privilege-gating, never money movement.
+  try {
+    const standing = await settlementStanding(user.id);
+    if (standing.behind) {
+      return NextResponse.json(
+        {
+          error:
+            "This account is behind on referral obligations. Settle or dispute them on the invites page first.",
+        },
+        { status: 403 },
+      );
+    }
+  } catch (err) {
+    if (err instanceof DbNotConfiguredError) {
+      return NextResponse.json({ error: err.message }, { status: 503 });
+    }
+    throw err;
+  }
 
   let body: Body;
   try {

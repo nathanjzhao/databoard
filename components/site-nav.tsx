@@ -18,6 +18,7 @@ const MEMBER_LINKS = [
   { href: "/messages", label: "Messages" },
   { href: "/deals", label: "Deals" },
   { href: "/leaderboard", label: "Leaderboard" },
+  { href: "/invites", label: "Invites" },
   { href: "/transparency", label: "Transparency" },
 ] as const;
 

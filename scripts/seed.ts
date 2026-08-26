@@ -30,6 +30,8 @@ import {
   createDeal,
   declineDealShare,
 } from "../lib/deals.ts";
+import { consumeInvite, mintInvite } from "../lib/invites.ts";
+import { confirmSettlement, recordSettlement } from "../lib/referrals.ts";
 import { appendMessage } from "../app/api/threads/store.ts";
 import {
   deriveIdentityKeys,
@@ -42,6 +44,9 @@ import {
 const DEMO_PASSWORD = "demo-demo-demo";
 
 const USERS = [
+  // The genealogy origin: the operator account every invite chain traces
+  // back to. It posts nothing and deals nothing; it vouches.
+  { username: "marble-pennant", accountType: "individual", contact: "seed-marble-pennant@example.com" },
   { username: "quiet-ledger", accountType: "org", contact: "seed-quiet-ledger@example.com" },
   { username: "granite-fox", accountType: "individual", contact: "seed-granite-fox@example.com" },
   { username: "midnight-audit", accountType: "org", contact: "+1 415 555 0101" },
@@ -440,6 +445,10 @@ async function main() {
 
   // Idempotent: clear all rows (children first), then reinsert.
   for (const table of [
+    "referral_disputes",
+    "referral_settlements",
+    "invite_edges",
+    "invites",
     "hidden_asks",
     "operators",
     "deal_participants",
@@ -484,18 +493,57 @@ async function main() {
     console.log(`user  @${created.user.username} (${created.user.accountType})`);
   }
 
-  // One seeded operator, so /admin and the hide controls are testable
-  // locally out of the box. Granted through the REAL grant path (the
-  // command-line script is the only writer to the operators table), run as
-  // the child process it is in production use.
+  // Two seeded operators, so /admin and the hide controls are testable
+  // locally out of the box: quiet-ledger (the working operator the specs
+  // sign in as) and marble-pennant (the genealogy origin). Granted through
+  // the REAL grant path (the command-line script is the only writer to the
+  // operators table), run as the child process it is in production use.
   {
     const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
-    execFileSync(
-      process.execPath,
-      [path.join(scriptsDir, "grant-operator.ts"), "quiet-ledger"],
-      { cwd: path.dirname(scriptsDir), stdio: "inherit" },
-    );
+    for (const handle of ["quiet-ledger", "marble-pennant"]) {
+      execFileSync(
+        process.execPath,
+        [path.join(scriptsDir, "grant-operator.ts"), handle],
+        { cwd: path.dirname(scriptsDir), stdio: "inherit" },
+      );
+    }
   }
+
+  // The invite genealogy, through the REAL paths: every edge is a code the
+  // inviter minted (mintInvite, cap and all) and the invitee spent
+  // (consumeInvite), so the used-by lists and the referral ledger read
+  // exactly what production writes. marble-pennant is the origin;
+  // quiet-ledger roots the member tree at depth 1 beneath it, so every
+  // seeded chain, and every future chain grown from these members' codes,
+  // traces back to the operator account. attic-lantern (created below)
+  // deliberately keeps NO edge: it is the grandfathered pre-invite account,
+  // and /invites shows that state honestly.
+  const EDGES: [inviter: string, invitee: string][] = [
+    ["marble-pennant", "quiet-ledger"],
+    ["quiet-ledger", "granite-fox"],
+    ["quiet-ledger", "midnight-audit"],
+    ["quiet-ledger", "cold-copy"],
+    ["granite-fox", "paper-trail"],
+    ["granite-fox", "vellum"],
+  ];
+  for (const [inviter, invitee] of EDGES) {
+    const minted = await mintInvite(userIds.get(inviter)!);
+    if (!minted.ok) throw new Error(`seed invite mint by ${inviter}: ${minted.error}`);
+    const spent = await consumeInvite(minted.code, userIds.get(invitee)!);
+    if (!spent.ok) throw new Error(`seed invite spend for ${invitee}: ${spent.error}`);
+  }
+  // A few unused codes for every seeded member, the operators included, so
+  // signup is exercisable against seed data out of the box.
+  for (const u of USERS) {
+    for (let i = 0; i < 3; i++) {
+      const minted = await mintInvite(userIds.get(u.username)!);
+      if (!minted.ok) throw new Error(`seed spare invite for ${u.username}: ${minted.error}`);
+    }
+  }
+  console.log(
+    `invites: ${EDGES.length} edges recorded (origin marble-pennant), ` +
+      `${USERS.length * 3} unused codes minted`,
+  );
 
   const day = 24 * 60 * 60 * 1000;
   const askIds: string[] = [];
@@ -660,6 +708,34 @@ async function main() {
     );
   }
 
+  // Referral settlements, through the REAL recording path: the payee (the
+  // creditor) writes down money received off the platform; the payer
+  // confirms one of them, and the other stays visibly one-sided. Amounts
+  // are integer cents and match the accruals the ledger derives from the
+  // deals above: vellum's $60k confirmed share accrues exactly $1,500 to
+  // granite-fox at depth 1; cold-copy's $120k accrues $3,000 to
+  // quiet-ledger.
+  {
+    const s1 = await recordSettlement(
+      userIds.get("granite-fox")!,
+      "vellum",
+      1_500_00,
+      "wire against invoice 7",
+    );
+    if (!s1.ok) throw new Error(`seed settlement (vellum -> granite-fox): ${s1.error}`);
+    const c1 = await confirmSettlement(s1.id, userIds.get("vellum")!);
+    if (!c1.ok) throw new Error(`seed settlement confirm: ${c1.error}`);
+
+    const s2 = await recordSettlement(
+      userIds.get("quiet-ledger")!,
+      "cold-copy",
+      3_000_00,
+      "cash, receipt kept both sides",
+    );
+    if (!s2.ok) throw new Error(`seed settlement (cold-copy -> quiet-ledger): ${s2.error}`);
+    console.log("referrals: 2 settlements recorded (one payer-confirmed)");
+  }
+
   // One PRE-E2EE thread, kept deliberately. @attic-lantern is an account
   // from before message encryption shipped and has not signed in since, so
   // it has no user_e2ee_keys row; a thread seating it cannot be encrypted
@@ -676,6 +752,12 @@ async function main() {
     );
     if (!legacy.ok) throw new Error(`seed user attic-lantern: ${legacy.error}`);
     const legacyId = legacy.user.id;
+    // Grandfathered accounts still get to vouch: a couple of codes through
+    // the real mint path, even though nobody is recorded above this one.
+    for (let i = 0; i < 2; i++) {
+      const minted = await mintInvite(legacyId);
+      if (!minted.ok) throw new Error(`seed spare invite for attic-lantern: ${minted.error}`);
+    }
     const askId = askIds[6]; // "Merged-PR triplets from private monorepos"
     const ownerId = userIds.get("quiet-ledger")!;
     const threadId = newId("thr");

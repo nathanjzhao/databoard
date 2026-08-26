@@ -49,6 +49,14 @@ const CAN_SEE: ReadonlyArray<readonly [string, string]> = [
     "Moderation state",
     "which accounts hold the operator flag and which asks are hidden, with the operator-written reason; user ids resolve to handles and nothing else",
   ],
+  [
+    "The invite graph",
+    "who invited whom: codes, edges, timestamps; stored permanently, shown only to the two accounts on each edge and to operators, and never on any public surface",
+  ],
+  [
+    "Referral settlement records",
+    "amounts, notes and timestamps two members chose to record about off-platform settlement, plus raised disputes; the accruals themselves are computed at read time and stored nowhere",
+  ],
 ];
 
 const CANNOT_SEE: ReadonlyArray<readonly [string, string]> = [

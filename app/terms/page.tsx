@@ -30,6 +30,7 @@ const CONTENTS = [
   ["05", "liability", "Disclaimers and liability"],
   ["06", "changes", "Changes"],
   ["07", "law", "Governing law"],
+  ["08", "referrals", "Referral fees"],
 ] as const;
 
 /** What the service is not, one row each. */
@@ -330,6 +331,43 @@ export default function TermsPage() {
             </Link>
             .
           </p>
+        </TSection>
+
+        <TSection
+          id="referrals"
+          num="08"
+          title="Referral fees"
+          lede="The board is invite-only, and joining through an invite carries a fee. It is stated here because it is a term of service, not a surprise on a ledger."
+        >
+          <div className="border border-rule bg-panel px-5 py-4">
+            <ul className="max-w-[64ch] space-y-3 text-[0.875rem] leading-relaxed text-ink-dim">
+              <li>
+                By creating an account with an invite code you agree that every
+                ancestor in your invite chain accrues a fee from your
+                board-recorded earnings: 2.5% to your inviter, 2.5% of 2.5%
+                (0.0625%) to theirs, and so on, capped at six steps.
+              </li>
+              <li>
+                Earnings means your own confirmed shares on deals at
+                co-attested tier or better. Solo claims, declined shares and
+                pending shares accrue nothing.
+              </li>
+              <li>
+                The platform computes and records these figures; it never
+                holds or moves the money. You settle directly with each
+                ancestor, off the platform, and either of you can record and
+                confirm the settlement on the invites page.
+              </li>
+              <li>
+                Falling more than 60 days behind gates posting new asks and
+                recording new deals until you settle or dispute. Disputing is
+                one click, lifts the gate, and puts the pair in front of an
+                operator. That gate is the entire enforcement today; deduction
+                at source is a planned upgrade and will be announced as a
+                change under section 06 before it exists.
+              </li>
+            </ul>
+          </div>
         </TSection>
       </div>
     </div>

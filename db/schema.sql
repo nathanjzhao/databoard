@@ -618,3 +618,51 @@ CREATE TABLE IF NOT EXISTS invite_edges (
 
 CREATE INDEX IF NOT EXISTS idx_invite_edges_inviter ON invite_edges(inviter_id);
 
+-- ---------------------------------------------------------------------------
+-- referral_settlements
+--
+-- Records of referral fees settled OFF the platform. The accruals themselves
+-- are never stored: lib/referrals.ts derives them at read time from
+-- invite_edges x deal_participants (2.5% per step up the chain, capped at
+-- depth 6). This table holds only what members chose to write down about
+-- paying them: the payee (the ancestor, the creditor) records an amount
+-- received, and the payer confirms it, the same two-sided ethos as deals.
+-- Recorded, never custodied; no money touches the platform.
+--
+-- amount_cents is integer cents (the ledger's arithmetic is exact; only
+-- DISPLAY rounds to whole dollars). No PII: user ids, an amount, a short
+-- note the payee wrote (same free-text caveat as every other note column).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS referral_settlements (
+  id                 TEXT    PRIMARY KEY,
+  payer_id           TEXT    NOT NULL REFERENCES users(id),
+  payee_id           TEXT    NOT NULL REFERENCES users(id),
+  amount_cents       INTEGER NOT NULL CHECK (amount_cents > 0),
+  note               TEXT    NOT NULL DEFAULT '',
+  settled_at         INTEGER NOT NULL,
+  confirmed_by_payer INTEGER NOT NULL DEFAULT 0 CHECK (confirmed_by_payer IN (0, 1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_referral_settlements_payer ON referral_settlements(payer_id);
+CREATE INDEX IF NOT EXISTS idx_referral_settlements_payee ON referral_settlements(payee_id);
+
+-- ---------------------------------------------------------------------------
+-- referral_disputes
+--
+-- The escape valve on the referral ledger. Either account on a payer/payee
+-- pair can mark the pair disputed with one click; a disputed pair stops
+-- counting toward "behind on referral obligations" (the posting gate) and is
+-- flagged to operators. A dispute is loud and mutual by construction: both
+-- parties see it on /invites. It is not forgiveness, it is a request for a
+-- human to look.
+--
+-- No PII here: three user ids and a timestamp.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS referral_disputes (
+  payer_id  TEXT    NOT NULL REFERENCES users(id),
+  payee_id  TEXT    NOT NULL REFERENCES users(id),
+  raised_by TEXT    NOT NULL REFERENCES users(id),
+  raised_at INTEGER NOT NULL,
+  PRIMARY KEY (payer_id, payee_id)
+);
+

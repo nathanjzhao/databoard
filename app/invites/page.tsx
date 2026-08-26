@@ -1,0 +1,395 @@
+/**
+ * /invites
+ *
+ * The member's invite surface, one column, four blocks: codes, genealogy,
+ * the referral ledger (downline), and the mirror (what the viewer owes up
+ * their own chain). Everything money-shaped on this page is a RECORD: the
+ * platform computes accruals at read time and holds nothing; settlement
+ * happens between the two accounts, off the platform, and gets written down
+ * here two-sidedly. The one enforcement is privilege-gating: an account 60+
+ * days behind cannot post asks or record deals until it settles or disputes.
+ *
+ * Genealogy visibility, stated where it is rendered: who invited whom is
+ * shown only to the two accounts on each edge and to operators. It is never
+ * public, and /transparency documents that choice.
+ */
+
+import type { Metadata } from "next";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { DbNotConfiguredNotice, PageStub } from "@/components/page-stub";
+import { timeAgo } from "@/components/matches/format";
+import { depthLabel, rateLabel, usdWhole } from "@/components/invites/format";
+import {
+  CopyCodeButton,
+  MintInviteButton,
+} from "@/components/invites/code-controls";
+import {
+  ConfirmSettlementButton,
+  DisputeButton,
+  RecordSettlementForm,
+} from "@/components/invites/ledger-controls";
+import { getSessionUser } from "@/lib/auth";
+import { isDbConfigured } from "@/lib/db";
+import { MAX_UNUSED_INVITES, invitedBy, listInvitees, listInvitesFor } from "@/lib/invites";
+import { isOperator } from "@/lib/moderation";
+import {
+  MAX_REFERRAL_DEPTH,
+  computeReferralLedger,
+  listOpenDisputes,
+  settlementStanding,
+} from "@/lib/referrals";
+
+export const metadata: Metadata = { title: "Invites" };
+export const dynamic = "force-dynamic";
+
+const EYEBROW = "Invites";
+const TITLE = "Who vouched, who owes whom.";
+const BLURB =
+  "Nobody joins without a member's code, so every account hangs off a chain " +
+  "of vouches. That chain carries a fee: 2.5% of your board-recorded " +
+  "earnings to your inviter, 2.5% of that to theirs, six steps at most. The " +
+  "board computes and records; it holds and moves no money.";
+
+export default async function InvitesPage() {
+  if (!isDbConfigured()) {
+    return (
+      <PageStub eyebrow={EYEBROW} title={TITLE} blurb={BLURB}>
+        <DbNotConfiguredNotice />
+      </PageStub>
+    );
+  }
+
+  const user = await getSessionUser();
+  if (!user) redirect("/gate");
+
+  const [codes, inviter, invitees, ledger, standing, operator] = await Promise.all([
+    listInvitesFor(user.id),
+    invitedBy(user.id),
+    listInvitees(user.id),
+    computeReferralLedger(user.id),
+    settlementStanding(user.id),
+    isOperator(user.id),
+  ]);
+  const disputes = operator ? await listOpenDisputes() : [];
+  const unusedCount = codes.filter((c) => !c.usedByUsername).length;
+
+  return (
+    <div className="mx-auto w-full max-w-[880px] px-5 py-14">
+      <div className="bt-label">{EYEBROW}</div>
+      <h1 className="bt-display mt-3 text-[2.5rem] leading-[1.05] text-ink">
+        {TITLE}
+      </h1>
+      <p className="mt-4 max-w-[62ch] text-[0.9375rem] leading-relaxed text-ink-dim">
+        {BLURB}
+      </p>
+
+      {standing.behind ? (
+        <div className="mt-8 border-l-2 border-red bg-red-wash px-4 py-3.5">
+          <div className="bt-label text-red">Behind on referral obligations</div>
+          <p className="mt-2 max-w-[62ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+            Some of what you owe up your chain has been outstanding for more
+            than 60 days. Until it is settled or disputed, this account cannot
+            post new asks or record new deals. Settle by paying the person and
+            having them record it below, or dispute the pair to put it in
+            front of an operator.
+          </p>
+          <ul className="mt-2 space-y-1 font-mono text-[0.75rem] text-ink">
+            {standing.pairs.map((p) => (
+              <li key={p.payeeUsername}>
+                @{p.payeeUsername}: {usdWhole(p.outstandingCents)} outstanding,
+                oldest {timeAgo(p.oldestUnsettledAt)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* ------------------------------------------------------- codes */}
+      <section className="mt-12 border-t border-rule pt-8">
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <h2 className="bt-display text-[1.5rem] text-ink">Your codes</h2>
+          <span className="font-mono text-[0.6875rem] text-ink-faint">
+            {operator
+              ? `${unusedCount} unused, uncapped (operator)`
+              : `${unusedCount} of ${MAX_UNUSED_INVITES} unused slots held`}
+          </span>
+        </div>
+        <p className="mt-2 max-w-[62ch] text-[0.8125rem] leading-relaxed text-ink-faint">
+          A code admits exactly one account and records you as its voucher,
+          permanently. Mint at most {MAX_UNUSED_INVITES} unused at a time;
+          hand them to people you would answer for.
+        </p>
+        <div className="mt-4">
+          <MintInviteButton />
+        </div>
+        <div className="mt-4 border border-rule bg-panel">
+          {codes.length === 0 ? (
+            <p className="px-4 py-4 text-[0.8125rem] text-ink-faint">
+              No codes minted yet.
+            </p>
+          ) : (
+            <ul className="divide-y divide-rule">
+              {codes.map((c) => (
+                <li
+                  key={c.code}
+                  className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3"
+                >
+                  <span className="break-all font-mono text-[0.8125rem] text-ink">
+                    {c.code}
+                  </span>
+                  {!c.usedByUsername ? <CopyCodeButton code={c.code} /> : null}
+                  <span className="ml-auto font-mono text-[0.6875rem] text-ink-faint">
+                    {c.usedByUsername
+                      ? `used by @${c.usedByUsername} ${c.usedAt ? timeAgo(c.usedAt) : ""}`
+                      : `unused, minted ${timeAgo(c.createdAt)}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      {/* --------------------------------------------------- genealogy */}
+      <section className="mt-12 border-t border-rule pt-8">
+        <h2 className="bt-display text-[1.5rem] text-ink">Your chain</h2>
+        <p className="mt-2 max-w-[62ch] text-[0.8125rem] leading-relaxed text-ink-faint">
+          Who invited whom is stored, and it is visible exactly here: to the
+          two accounts on each edge, and to operators. It appears on no
+          public surface, the leaderboard included.
+        </p>
+        <div className="mt-4 border border-rule bg-panel">
+          <div className="border-b border-rule px-4 py-3 text-[0.8125rem] text-ink-dim">
+            {inviter ? (
+              <>
+                Invited by <span className="font-mono text-ink">@{inviter.username}</span>{" "}
+                <span className="font-mono text-[0.6875rem] text-ink-faint">
+                  {timeAgo(inviter.at)}
+                </span>
+              </>
+            ) : (
+              <>This account predates invites. Nobody is recorded above you.</>
+            )}
+          </div>
+          {invitees.length === 0 ? (
+            <p className="px-4 py-3 text-[0.8125rem] text-ink-faint">
+              Nobody has joined on your codes yet.
+            </p>
+          ) : (
+            <ul className="divide-y divide-rule">
+              {invitees.map((i) => (
+                <li
+                  key={i.username}
+                  className="flex items-baseline gap-3 px-4 py-2.5"
+                >
+                  <span className="font-mono text-[0.8125rem] text-ink">
+                    @{i.username}
+                  </span>
+                  <span className="ml-auto font-mono text-[0.6875rem] text-ink-faint">
+                    joined {timeAgo(i.joinedAt)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      {/* ------------------------------------------------------ ledger */}
+      <section className="mt-12 border-t border-rule pt-8">
+        <h2 className="bt-display text-[1.5rem] text-ink">
+          Accruing to you
+        </h2>
+        <p className="mt-2 max-w-[62ch] text-[0.8125rem] leading-relaxed text-ink-faint">
+          Everyone beneath you within {MAX_REFERRAL_DEPTH} steps, and what
+          their earnings accrue to you: 2.5% per step, on confirmed shares of
+          co-attested deals only. Solo claims accrue nothing. When someone
+          pays you off the platform, record it on their row; your record is
+          what reduces the debt.
+        </p>
+        <div className="mt-4 border border-rule bg-panel">
+          {ledger.downline.length === 0 ? (
+            <p className="px-4 py-4 text-[0.8125rem] text-ink-faint">
+              Nobody in your downline yet. Accruals start when someone who
+              joined on your chain records earnings.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-[0.8125rem]">
+                <thead>
+                  <tr className="border-b border-rule">
+                    <th className="bt-label px-4 py-2.5 font-normal">member</th>
+                    <th className="bt-label px-2 py-2.5 font-normal">depth / rate</th>
+                    <th className="bt-label px-2 py-2.5 text-right font-normal">earnings</th>
+                    <th className="bt-label px-2 py-2.5 text-right font-normal">accrued</th>
+                    <th className="bt-label px-2 py-2.5 text-right font-normal">settled</th>
+                    <th className="bt-label px-2 py-2.5 text-right font-normal">outstanding</th>
+                    <th className="px-4 py-2.5" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-rule">
+                  {ledger.downline.map((d) => (
+                    <tr key={d.username} className="align-top">
+                      <td className="px-4 py-3 font-mono text-ink">
+                        @{d.username}
+                        {d.disputed ? (
+                          <span className="ml-2 bg-red-wash px-1.5 py-0.5 font-mono text-[0.625rem] text-red">
+                            disputed
+                          </span>
+                        ) : null}
+                      </td>
+                      <td className="px-2 py-3 font-mono text-[0.6875rem] text-ink-faint">
+                        {depthLabel(d.depth)} · {rateLabel(d.depth)}
+                      </td>
+                      <td className="px-2 py-3 text-right font-mono tabular-nums text-ink-dim">
+                        {usdWhole(d.lifetimeEarningsCents)}
+                      </td>
+                      <td className="px-2 py-3 text-right font-mono tabular-nums text-ink">
+                        {usdWhole(d.accruedCents)}
+                      </td>
+                      <td className="px-2 py-3 text-right font-mono tabular-nums text-ink-dim">
+                        {usdWhole(d.settledCents)}
+                      </td>
+                      <td className="px-2 py-3 text-right font-mono tabular-nums text-ink">
+                        {usdWhole(d.outstandingCents)}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <RecordSettlementForm payerUsername={d.username} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ------------------------------------------------------ mirror */}
+      <section className="mt-12 border-t border-rule pt-8">
+        <h2 className="bt-display text-[1.5rem] text-ink">
+          What you owe up your chain
+        </h2>
+        <p className="mt-2 max-w-[62ch] text-[0.8125rem] leading-relaxed text-ink-faint">
+          The same arithmetic from the other side: each ancestor, their rate
+          on your earnings, and where you stand. You pay them directly, off
+          the platform; they record it; you confirm. If a figure is wrong,
+          dispute the pair; that lifts any block and puts it in front of an
+          operator.
+        </p>
+        <div className="mt-4 border border-rule bg-panel">
+          {ledger.upline.length === 0 ? (
+            <p className="px-4 py-4 text-[0.8125rem] text-ink-faint">
+              No ancestors recorded. Nothing accrues from your earnings.
+            </p>
+          ) : (
+            <ul className="divide-y divide-rule">
+              {ledger.upline.map((a) => (
+                <li key={a.username} className="px-4 py-3">
+                  <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                    <span className="font-mono text-[0.8125rem] text-ink">
+                      @{a.username}
+                    </span>
+                    <span className="font-mono text-[0.6875rem] text-ink-faint">
+                      {depthLabel(a.depth)} · {rateLabel(a.depth)} of your earnings
+                    </span>
+                    {a.disputed ? (
+                      <span className="bg-red-wash px-1.5 py-0.5 font-mono text-[0.625rem] text-red">
+                        disputed
+                      </span>
+                    ) : (
+                      <DisputeButton withUsername={a.username} />
+                    )}
+                    <span className="ml-auto font-mono text-[0.75rem] tabular-nums text-ink">
+                      {usdWhole(a.accruedCents)} accrued · {usdWhole(a.settledCents)}{" "}
+                      settled · {usdWhole(a.outstandingCents)} outstanding
+                    </span>
+                  </div>
+                  {a.oldestUnsettledAt != null ? (
+                    <p className="mt-1 font-mono text-[0.6875rem] text-ink-faint">
+                      oldest unsettled accrual {timeAgo(a.oldestUnsettledAt)}
+                    </p>
+                  ) : null}
+                  {a.settlements.length > 0 ? (
+                    <ul className="mt-2 space-y-1">
+                      {a.settlements.map((s) => (
+                        <li
+                          key={s.id}
+                          className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[0.75rem] text-ink-dim"
+                        >
+                          <span className="font-mono tabular-nums">
+                            {usdWhole(s.amountCents)}
+                          </span>
+                          <span className="font-mono text-[0.6875rem] text-ink-faint">
+                            recorded {timeAgo(s.settledAt)}
+                          </span>
+                          {s.note ? <span>{s.note}</span> : null}
+                          {s.confirmedByPayer ? (
+                            <span className="font-mono text-[0.6875rem] text-green">
+                              confirmed by you
+                            </span>
+                          ) : (
+                            <ConfirmSettlementButton settlementId={s.id} />
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      {/* ------------------------------------------------- the honest print */}
+      <section className="mt-12 border-t border-rule pt-8">
+        <div className="border-l-2 border-amber bg-amber-wash px-4 py-3.5">
+          <div className="bt-label text-amber">What this ledger is</div>
+          <p className="mt-2 max-w-[62ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+            A computation and a record. The platform derives every figure above
+            from the invite chain and the deals ledger at read time, holds no
+            balances, and moves no money; settlement happens between the two of
+            you, on rails you choose. The obligation itself is a term of
+            service (
+            <Link href="/terms#referrals" className="text-blue hover:text-amber">
+              /terms
+            </Link>
+            , section 08), enforced today by privilege-gating only. At-source
+            deduction, where the fee comes out before money reaches the earner,
+            is the planned Stripe Connect upgrade described in the payments
+            blueprint; it is not shipped, and nothing here pretends otherwise.
+          </p>
+        </div>
+      </section>
+
+      {operator && disputes.length > 0 ? (
+        <section className="mt-12 border-t border-rule pt-8">
+          <h2 className="bt-display text-[1.5rem] text-ink">
+            Open disputes
+            <span className="ml-3 bt-token align-middle">operator view</span>
+          </h2>
+          <ul className="mt-4 divide-y divide-rule border border-rule bg-panel">
+            {disputes.map((d) => (
+              <li
+                key={`${d.payerUsername}-${d.payeeUsername}`}
+                className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3 text-[0.8125rem]"
+              >
+                <span className="font-mono text-ink">
+                  @{d.payerUsername} owes @{d.payeeUsername}
+                </span>
+                <span className="text-ink-faint">
+                  raised by <span className="font-mono">@{d.raisedByUsername}</span>
+                </span>
+                <span className="ml-auto font-mono text-[0.6875rem] text-ink-faint">
+                  {timeAgo(d.raisedAt)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+    </div>
+  );
+}
