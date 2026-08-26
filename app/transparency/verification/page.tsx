@@ -306,6 +306,15 @@ export default function VerificationPage() {
         >
           <MechanismList items={PAYMENT_MECHANISMS} />
 
+          <p className="mt-4 max-w-[64ch] text-[0.8125rem] leading-relaxed text-ink-faint">
+            The engineering path for the first of these rungs is written down
+            in <span className="font-mono text-[0.75rem]">docs/PAYMENTS.md</span>{" "}
+            in the repo: sellers onboard their own Stripe Connect accounts, the
+            platform reads payment status and never touches the money, and the
+            same rail would fund referral payouts at source. It is a blueprint,
+            planned and not shipped, and no deal earns this rung until it is.
+          </p>
+
           <div className="mt-6 border-l-2 border-red bg-red-wash px-4 py-3.5">
             <div className="bt-label text-red">The line we do not cross</div>
             <p className="mt-2 max-w-[62ch] text-[0.8438rem] leading-relaxed text-ink-dim">
