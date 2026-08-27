@@ -12,6 +12,7 @@ import { notFound, redirect } from "next/navigation";
 import { DbNotConfiguredNotice, PageStub } from "@/components/page-stub";
 import { HiddenList } from "@/components/admin/hidden-list";
 import { DisputesList } from "@/components/admin/disputes-list";
+import { SignalsPanel } from "@/components/admin/signals-panel";
 import { OpsErrorsSlot } from "@/components/admin/ops-errors-slot";
 import { getSessionUser } from "@/lib/auth";
 import { isDbConfigured } from "@/lib/db";
@@ -52,6 +53,7 @@ export default async function AdminPage() {
       <div className="mt-10 space-y-6">
         <HiddenList rows={hidden} />
         <DisputesList rows={disputes} />
+        <SignalsPanel />
         <OpsErrorsSlot />
       </div>
     </div>
