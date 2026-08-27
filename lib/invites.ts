@@ -18,10 +18,40 @@
 
 import { randomBytes } from "node:crypto";
 import { getDb, now } from "./db.ts";
+import { appendLeaf } from "./translog.ts";
 import { isOperator } from "./moderation.ts";
+import { recordedVolumeByUser } from "./stats.ts";
+import { recorderStanding } from "./matching.ts";
 
 export const INVITE_CODE_RE = /^inv_[0-9a-f]{24}$/;
+/** The base unused-code cap. Recorder standing raises it (maxUnusedInvites). */
 export const MAX_UNUSED_INVITES = 5;
+/** The most extra unused slots recorder standing can add on top of the base (C). */
+export const MAX_STANDING_INVITE_BONUS = 5;
+
+/**
+ * The unused-code cap for a member at a given recorder-standing tier (feature
+ * C). Base MAX_UNUSED_INVITES, plus one slot per tier, capped at base +
+ * MAX_STANDING_INVITE_BONUS. A record-empty account (tier 0) gets exactly the
+ * base, so nothing about the cap changes for accounts with no recorded volume:
+ * the larger cap is a standing benefit the same volume that pays fees unlocks.
+ */
+export function maxUnusedInvites(standingTier: number): number {
+  const bonus = Math.max(0, Math.min(standingTier, MAX_STANDING_INVITE_BONUS));
+  return MAX_UNUSED_INVITES + bonus;
+}
+
+/**
+ * A member's current unused-code cap, resolved from their recorder standing.
+ * The one place mintInvite and /invites both read, so the enforced cap and the
+ * displayed cap can never drift. Reads the same confirmed, co-attested recorded
+ * volume the fee accrues on (lib/stats.ts), so a bigger cap always cost fees.
+ */
+export async function unusedInviteCap(userId: string): Promise<number> {
+  const vol = (await recordedVolumeByUser([userId])).get(userId);
+  const standing = recorderStanding(vol?.volumeUsd ?? 0, vol?.evidenceBackedDeals ?? 0);
+  return maxUnusedInvites(standing.tier);
+}
 
 /** Server-side mint format: "inv_" + 24 hex characters. */
 export function generateInviteCode(): string {
@@ -36,21 +66,24 @@ export function normalizeInviteCode(raw: string): string {
 
 export type MintInviteResult =
   | { ok: true; code: string }
-  | { ok: false; error: "limit" };
+  | { ok: false; error: "limit"; cap: number };
 
 /**
- * Mint one code for a member. Refuses when the member already holds
- * MAX_UNUSED_INVITES unused codes; operators are uncapped.
+ * Mint one code for a member. Refuses when the member already holds their cap
+ * of unused codes; the cap is the base plus a recorder-standing bonus
+ * (maxUnusedInvites, feature C), and operators are uncapped. On refusal the
+ * result carries the cap so the caller can name the right number.
  */
 export async function mintInvite(userId: string): Promise<MintInviteResult> {
   const db = await getDb();
   if (!(await isOperator(userId))) {
+    const cap = await unusedInviteCap(userId);
     const rs = await db.execute({
       sql: `SELECT COUNT(*) AS n FROM invites WHERE inviter_id = ? AND used_by IS NULL`,
       args: [userId],
     });
-    if (Number(rs.rows[0]?.n ?? 0) >= MAX_UNUSED_INVITES) {
-      return { ok: false, error: "limit" };
+    if (Number(rs.rows[0]?.n ?? 0) >= cap) {
+      return { ok: false, error: "limit", cap };
     }
   }
   const code = generateInviteCode();
@@ -126,6 +159,13 @@ export async function consumeInvite(
             VALUES (?, ?, ?, ?)`,
       args: [newUserId, inviterId, code, now()],
     });
+    // Transparency log: an invite being consumed is a consequential, non-PII
+    // event. Appended in the SAME transaction so it commits with the edge.
+    // The leaf carries only a blinded code, never who used it.
+    await appendLeaf(
+      { type: "invite_consumed", subject: code },
+      { executor: tx, dedupKey: `invite_consumed:${code}` },
+    );
     await tx.commit();
     return { ok: true, inviterId };
   } finally {

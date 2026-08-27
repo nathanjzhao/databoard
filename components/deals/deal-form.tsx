@@ -58,6 +58,7 @@ export function DealForm({
   const [askId, setAskId] = useState(prefillAskId ?? "");
   const [total, setTotal] = useState("");
   const [myShare, setMyShare] = useState("");
+  const [closeDate, setCloseDate] = useState("");
   const [note, setNote] = useState("");
   const [participants, setParticipants] = useState<ParticipantDraft[]>(() =>
     prefillParticipants.map((u) => ({ key: nextKey++, username: u, share: "" })),
@@ -109,6 +110,7 @@ export function DealForm({
       // only the finished token is posted. Failures land in the catch and
       // nothing is submitted. There is no plaintext fallback.
       const buyerTokenV2 = await mintBuyerTokenV2(buyer);
+      const statedCloseAt = closeDate ? Date.parse(closeDate) : null;
       const res = await fetch("/api/deals", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -123,6 +125,10 @@ export function DealForm({
             username: p.username.trim().toLowerCase(),
             shareUsd: shareValues[i],
           })),
+          statedCloseAt:
+            statedCloseAt != null && Number.isFinite(statedCloseAt)
+              ? statedCloseAt
+              : null,
         }),
       });
       const data = (await res.json().catch(() => ({}))) as {
@@ -220,6 +226,26 @@ export function DealForm({
               </option>
             ))}
           </select>
+        </label>
+
+        <label className="block sm:max-w-[280px]">
+          <span className="bt-label">Close date, optional</span>
+          <input
+            type="date"
+            className="bt-input mt-2 font-mono"
+            value={closeDate}
+            onChange={(e) => setCloseDate(e.target.value)}
+            aria-label="Close date"
+          />
+          <span className="mt-1.5 block text-[0.6875rem] leading-relaxed text-ink-faint">
+            When the deal actually closed. Record it within two weeks of this
+            date and commit evidence on your row, and your referral fee on this
+            deal drops 20% (
+            <Link href="/invites" className="text-blue hover:text-amber">
+              timely-recording credit
+            </Link>
+            ). A date is stored, nothing else; leave it blank to skip.
+          </span>
         </label>
       </Section>
 

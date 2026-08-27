@@ -23,12 +23,14 @@ export const dynamic = "force-dynamic";
 const EYEBROW = "Leaderboard";
 const TITLE = "The standings.";
 const BLURB =
-  "Ranked by who keeps bringing people into deals that both sides signed " +
-  "off on. Dollar figures are self-reported, co-attested at best, and " +
-  "rounded before they get anywhere near this page. A unilateral claim, one " +
-  "nobody co-signed, is worth nothing here: nothing for reputation, the same " +
-  "as it is worth nothing for referral fees. It shows only under claimed, " +
-  "unranked.";
+  "Headlined by value brought to others: the confirmed shares you put in " +
+  "other people's pockets, not the value you kept for yourself. Bringing " +
+  "deals to people ranks above hoarding them. Collaborators and value to self " +
+  "are one click away, but the default rewards network contribution. Dollar " +
+  "figures are self-reported, co-attested at best, and rounded before they " +
+  "get anywhere near this page. A unilateral claim, one nobody co-signed, is " +
+  "worth nothing here: nothing for reputation, the same as it is worth " +
+  "nothing for referral fees. It shows only under claimed, unranked.";
 
 const RULES: { rule: string; detail: string }[] = [
   {

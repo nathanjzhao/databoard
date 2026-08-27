@@ -31,10 +31,19 @@ import {
 } from "@/components/invites/ledger-controls";
 import { getSessionUser } from "@/lib/auth";
 import { isDbConfigured } from "@/lib/db";
-import { MAX_UNUSED_INVITES, invitedBy, listInvitees, listInvitesFor } from "@/lib/invites";
+import {
+  MAX_STANDING_INVITE_BONUS,
+  maxUnusedInvites,
+  invitedBy,
+  listInvitees,
+  listInvitesFor,
+} from "@/lib/invites";
 import { isOperator } from "@/lib/moderation";
+import { recordedVolumeByUser } from "@/lib/stats";
+import { recorderStanding, TRUSTED_RECORDER_MIN_TIER } from "@/lib/matching";
 import {
   MAX_REFERRAL_DEPTH,
+  TIMELY_EVIDENCE_CREDIT_BPS,
   computeReferralLedger,
   houseFloorReceivables,
   listOpenDisputes,
@@ -66,19 +75,41 @@ export default async function InvitesPage() {
   const user = await getSessionUser();
   if (!user) redirect("/gate");
 
-  const [codes, inviter, invitees, ledger, standing, operator, signals, houseReceivables] =
-    await Promise.all([
-      listInvitesFor(user.id),
-      invitedBy(user.id),
-      listInvitees(user.id),
-      computeReferralLedger(user.id),
-      settlementStanding(user.id),
-      isOperator(user.id),
-      structureSignalsFor(user.id),
-      houseFloorReceivables(user.id),
-    ]);
+  const [
+    codes,
+    inviter,
+    invitees,
+    ledger,
+    standing,
+    operator,
+    signals,
+    houseReceivables,
+    volumes,
+  ] = await Promise.all([
+    listInvitesFor(user.id),
+    invitedBy(user.id),
+    listInvitees(user.id),
+    computeReferralLedger(user.id),
+    settlementStanding(user.id),
+    isOperator(user.id),
+    structureSignalsFor(user.id),
+    houseFloorReceivables(user.id),
+    recordedVolumeByUser([user.id]),
+  ]);
   const disputes = operator ? await listOpenDisputes() : [];
   const unusedCount = codes.filter((c) => !c.usedByUsername).length;
+
+  // Recorder standing (feature C): the compact status, the invite cap, and the
+  // trusted-recorder threshold all read the same confirmed, evidenced recorded
+  // volume the referral fee accrues on.
+  const vol = volumes.get(user.id);
+  const recStanding = recorderStanding(vol?.volumeUsd ?? 0, vol?.evidenceBackedDeals ?? 0);
+  const inviteCap = maxUnusedInvites(recStanding.tier);
+
+  // Timely-recording credit earned so far (feature A): the sum of what the
+  // credit knocked off across the viewer's whole chain.
+  const totalCreditedCents = ledger.upline.reduce((s, u) => s + u.creditedCents, 0);
+  const creditPct = Math.round(TIMELY_EVIDENCE_CREDIT_BPS / 100);
 
   return (
     <div className="mx-auto w-full max-w-[880px] px-5 py-14">
@@ -89,6 +120,51 @@ export default async function InvitesPage() {
       <p className="mt-4 max-w-[62ch] text-[0.9375rem] leading-relaxed text-ink-dim">
         {BLURB}
       </p>
+
+      {/* ------------------------------------------ recorder standing (C) */}
+      <div className="mt-8 border border-rule bg-panel px-5 py-4">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <div className="bt-label">Recorder standing</div>
+          <span
+            className={[
+              "border px-1.5 py-0.5 font-mono text-[0.625rem] uppercase tracking-[0.1em]",
+              recStanding.trusted
+                ? "border-green/50 bg-green-wash text-green"
+                : recStanding.tier > 0
+                  ? "border-rule-strong text-ink-dim"
+                  : "border-rule text-ink-faint",
+            ].join(" ")}
+          >
+            {recStanding.label}
+          </span>
+        </div>
+        <p className="mt-2 max-w-[64ch] text-[0.8125rem] leading-relaxed text-ink-faint">
+          Your confirmed, evidenced recorded volume, bucketed. It is the same
+          volume the referral fee accrues on, so standing is never free: the
+          volume that unlocks a benefit is the volume that paid. Exact figures
+          stay on the server; only the tier and the bucket show.
+        </p>
+        <dl className="mt-3.5 grid grid-cols-2 gap-x-8 gap-y-3 border-t border-rule pt-3.5 sm:grid-cols-4">
+          <StandingCell label="Tier">
+            {recStanding.tier} of {TRUSTED_RECORDER_MIN_TIER + 2}
+          </StandingCell>
+          <StandingCell label="Recorded volume">{recStanding.chip ?? "none"}</StandingCell>
+          <StandingCell label="Match priority">
+            {recStanding.tier > 0 ? `+${recStanding.tier}` : "base"}
+          </StandingCell>
+          <StandingCell label="Invite cap">
+            {inviteCap}
+            {recStanding.tier > 0 ? (
+              <span className="text-ink-faint"> (+{inviteCap - 5})</span>
+            ) : null}
+          </StandingCell>
+        </dl>
+        <p className="mt-3 text-[0.6875rem] leading-relaxed text-ink-faint">
+          {recStanding.trusted
+            ? "Trusted recorder: your asks wear the badge, and you sit at the top matching-priority tier."
+            : `Clear tier ${TRUSTED_RECORDER_MIN_TIER} to wear the trusted-recorder badge on your asks. Every tier also adds an unused-invite slot, up to +${MAX_STANDING_INVITE_BONUS}.`}
+        </p>
+      </div>
 
       {standing.behind ? (
         <div className="mt-8 border-l-2 border-red bg-red-wash px-4 py-3.5">
@@ -118,13 +194,19 @@ export default async function InvitesPage() {
           <span className="font-mono text-[0.6875rem] text-ink-faint">
             {operator
               ? `${unusedCount} unused, uncapped (operator)`
-              : `${unusedCount} of ${MAX_UNUSED_INVITES} unused slots held`}
+              : `${unusedCount} of ${inviteCap} unused slots held`}
           </span>
         </div>
         <p className="mt-2 max-w-[62ch] text-[0.8125rem] leading-relaxed text-ink-faint">
           A code admits exactly one account and records you as its voucher,
-          permanently. Mint at most {MAX_UNUSED_INVITES} unused at a time;
-          hand them to people you would answer for.
+          permanently.{" "}
+          {operator
+            ? "As an operator you are uncapped."
+            : `Mint at most ${inviteCap} unused at a time` +
+              (recStanding.tier > 0
+                ? ` (base 5, plus ${inviteCap - 5} for your recorder standing)`
+                : "") +
+              "; hand them to people you would answer for."}
         </p>
         <div className="mt-4">
           <MintInviteButton />
@@ -284,6 +366,24 @@ export default async function InvitesPage() {
           dispute the pair; that lifts any block and puts it in front of an
           operator.
         </p>
+        <div className="mt-3 border-l-2 border-green/50 bg-green-wash/40 px-4 py-3">
+          <div className="bt-label text-green">Timely-recording credit</div>
+          <p className="mt-1.5 max-w-[64ch] text-[0.75rem] leading-relaxed text-ink-faint">
+            A confirmed share earns a {creditPct}% cut of the referral it owes,
+            at every step, when the deal was recorded within two weeks of the
+            close date you stated and you committed evidence on your row. The
+            credit only lowers what you owe, never below zero; a deal with no
+            stated close date or no evidence earns nothing.
+            {totalCreditedCents > 0 ? (
+              <>
+                {" "}
+                So far it has knocked{" "}
+                <span className="font-mono text-green">{usdWhole(totalCreditedCents)}</span>{" "}
+                off what you owe up your chain.
+              </>
+            ) : null}
+          </p>
+        </div>
         <div className="mt-4 border border-rule bg-panel">
           {ledger.upline.length === 0 ? (
             <p className="px-4 py-4 text-[0.8125rem] text-ink-faint">
@@ -316,6 +416,11 @@ export default async function InvitesPage() {
                   {a.oldestUnsettledAt != null ? (
                     <p className="mt-1 font-mono text-[0.6875rem] text-ink-faint">
                       oldest unsettled accrual {timeAgo(a.oldestUnsettledAt)}
+                    </p>
+                  ) : null}
+                  {a.creditedCents > 0 ? (
+                    <p className="mt-1 font-mono text-[0.6875rem] text-green">
+                      timely-recording credit −{usdWhole(a.creditedCents)}
                     </p>
                   ) : null}
                   {a.settlements.length > 0 ? (
@@ -478,6 +583,22 @@ export default async function InvitesPage() {
           </ul>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+/** One cell of the compact recorder-standing status. */
+function StandingCell({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className="bt-label">{label}</dt>
+      <dd className="font-mono text-[0.8125rem] tabular-nums text-ink">{children}</dd>
     </div>
   );
 }

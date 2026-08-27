@@ -100,6 +100,54 @@ export function trackRecordBucket(
   return Math.min(lifted, RECORDED_VOLUME_BUCKETS.length + 1);
 }
 
+/* ------------------------------------------------ recorder standing tiers (C)
+ *
+ * BUILDER 2 mechanism C. The recorder-standing tier is exactly the
+ * track-record bucket above, given a name and three benefits that read off it:
+ *
+ *   - MATCHING PRIORITY: comparePriority sorts by this tier (below), so more
+ *     recorded, evidenced volume lifts an account's asks and match position.
+ *   - INVITE CAP: lib/invites.ts maxUnusedInvites(tier) grows the unused-code
+ *     cap one slot per tier above the base.
+ *   - TRUSTED-RECORDER BADGE: tier >= TRUSTED_RECORDER_MIN_TIER earns a visible
+ *     badge on the account's asks (components/ask/meta.tsx TrustedRecorderBadge).
+ *
+ * The volume that unlocks all three is the same confirmed, co-attested volume
+ * the referral fee accrues on (lib/stats.ts recordedVolumeByUser shares the fee
+ * predicate), so a standing benefit is never free: the volume that unlocks it
+ * is the volume that paid. Exact figures never leave the server; only the tier,
+ * the bucketed chip, and the badge do.
+ */
+
+/** A tier at or above this earns the visible "trusted recorder" badge. */
+export const TRUSTED_RECORDER_MIN_TIER = 3;
+
+export type RecorderStanding = {
+  /** 0..RECORDED_VOLUME_BUCKETS.length+1: the key comparePriority and the cap read. */
+  tier: number;
+  /** The bucketed track-record chip ("$250k+"), or null when unrecorded. */
+  chip: string | null;
+  /** A short label for the compact status: unrecorded / recorder / trusted. */
+  label: string;
+  /** Whether the account clears the trusted-recorder threshold. */
+  trusted: boolean;
+};
+
+/** One account's recorder standing from its (server-only) recorded volume. */
+export function recorderStanding(
+  volumeUsd: number,
+  evidenceBackedDeals: number,
+): RecorderStanding {
+  const tier = trackRecordBucket(volumeUsd, evidenceBackedDeals);
+  const trusted = tier >= TRUSTED_RECORDER_MIN_TIER;
+  return {
+    tier,
+    chip: recordedVolumeChip(volumeUsd),
+    label: tier === 0 ? "Unrecorded" : trusted ? "Trusted recorder" : "Recorder",
+    trusted,
+  };
+}
+
 /** What the priority comparator needs about one ask. */
 export type PriorityInput = {
   createdAt: number;
@@ -120,8 +168,11 @@ export function comparePriority(
   const ra = recencyBucket(a.createdAt, nowMs);
   const rb = recencyBucket(b.createdAt, nowMs);
   if (ra !== rb) return ra - rb;
-  const ta = trackRecordBucket(a.volumeUsd, a.evidenceBackedDeals);
-  const tb = trackRecordBucket(b.volumeUsd, b.evidenceBackedDeals);
+  // Recorder-standing tier is the priority weight: a higher tier sorts first
+  // within a recency window. It is the same key the invite cap and the badge
+  // read, so all three standing benefits move together with recorded volume.
+  const ta = recorderStanding(a.volumeUsd, a.evidenceBackedDeals).tier;
+  const tb = recorderStanding(b.volumeUsd, b.evidenceBackedDeals).tier;
   if (ta !== tb) return tb - ta;
   return b.createdAt - a.createdAt;
 }

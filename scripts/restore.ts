@@ -43,7 +43,15 @@ const KNOWN_ORDER = [
   "messages",
   "deals",
   "deal_participants",
+  "deal_close_dates",
   "ops_errors",
+  // The transparency log. translog_leaves is the parent; translog_events
+  // carries a FOREIGN KEY to translog_leaves(seq), so leaves must load first.
+  // Without this both sort into the alphabetical "rest" tail, where
+  // translog_events precedes translog_leaves and the restore trips the FK.
+  "translog_leaves",
+  "translog_heads",
+  "translog_events",
 ];
 
 type Dump = {

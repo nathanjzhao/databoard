@@ -382,7 +382,10 @@ export async function computeLeaderboard(): Promise<LeaderboardStats> {
     });
   }
 
-  rows.sort(compareBy("collaborators"));
+  // Default order is the network-contribution headline (value brought to
+  // others), matching the leaderboard's default column. The client re-sorts by
+  // any column from the per-metric ranks, so this only sets the initial view.
+  rows.sort(compareBy("value_to_others"));
   return {
     rows,
     coAttestedDeals,

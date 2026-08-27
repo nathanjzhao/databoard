@@ -32,6 +32,7 @@ import {
 } from "../lib/deals.ts";
 import { consumeInvite, mintInvite } from "../lib/invites.ts";
 import { confirmSettlement, recordSettlement } from "../lib/referrals.ts";
+import { getSignedHead } from "../lib/translog.ts";
 import { appendMessage } from "../app/api/threads/store.ts";
 import {
   deriveIdentityKeys,
@@ -277,6 +278,16 @@ type DealSeed = {
   /** Messages dropped into the deal room, in order. */
   roomMessages: { from: string; body: string }[];
   ageDays: number;
+  /**
+   * When true the deal carries a reporter-stated close date (deal_close_dates),
+   * stated at recording time so |recorded - stated| = 0 stays inside the timely
+   * window (lib/referrals TIMELY_RECORDING_WINDOW_MS) even after the cosmetic
+   * backdate slides both stamps back together. Every confirmed share whose
+   * earner also committed evidence then earns the timely-recording fee credit,
+   * so the credit renders live on the /invites pages of that deal's evidenced
+   * parties. Only the fully evidence-committed deal sets this.
+   */
+  statedClose?: boolean;
 };
 
 /**
@@ -331,6 +342,10 @@ const DEALS: DealSeed[] = [
       { from: "granite-fox", body: "Confirmed and committed. Kept the original PDF in cold storage." },
     ],
     ageDays: 21,
+    // Reported on time against a stated close date, and every party pinned
+    // evidence: the one deal that earns the timely-recording fee credit, so it
+    // shows live on the invites pages of quiet-ledger, granite-fox and vellum.
+    statedClose: true,
   },
   {
     reporter: "midnight-audit",
@@ -427,6 +442,15 @@ async function backdateDeal(
     sql: `UPDATE deal_participants SET confirmed_at = confirmed_at - ?
            WHERE deal_id = ? AND confirmed_at IS NOT NULL`,
     args: [delta, dealId],
+  });
+  // Slide the stated-close and recorded-at stamps by the same delta: their
+  // difference (0) is preserved, so the deal stays inside the timely window,
+  // and the close date reads as contemporary with the backdated deal.
+  await db.execute({
+    sql: `UPDATE deal_close_dates
+             SET stated_close_at = stated_close_at - ?, recorded_at = recorded_at - ?
+           WHERE deal_id = ?`,
+    args: [delta, delta, dealId],
   });
   if (threadId) {
     await db.execute({
@@ -675,6 +699,8 @@ async function main() {
       totalUsd: d.totalUsd,
       myShareUsd: d.myShareUsd,
       note: d.note,
+      // Stated at recording time (diff 0), so it stays timely after backdating.
+      statedCloseAt: d.statedClose ? now() : null,
       participants: d.participants.map((p) => ({
         username: p.username,
         shareUsd: p.shareUsd,
@@ -747,14 +773,15 @@ async function main() {
   // creditor) writes down money received off the platform; the payer
   // confirms one of them, and the other stays visibly one-sided. Amounts
   // are integer cents and match the accruals the ledger derives from the
-  // deals above: vellum's $60k confirmed share accrues exactly $1,500 to
-  // granite-fox at depth 1; cold-copy's $120k accrues $3,000 to
-  // quiet-ledger.
+  // deals above: vellum's $60k confirmed share accrues $1,500 gross to
+  // granite-fox at depth 1, less the 20% timely-recording credit deal 0
+  // earns (evidence pinned, stated close date), so $1,200 net; cold-copy's
+  // $120k on the credit-free deal 3 accrues the full $3,000 to quiet-ledger.
   {
     const s1 = await recordSettlement(
       userIds.get("granite-fox")!,
       "vellum",
-      1_500_00,
+      1_200_00,
       "wire against invoice 7",
     );
     if (!s1.ok) throw new Error(`seed settlement (vellum -> granite-fox): ${s1.error}`);
@@ -847,6 +874,26 @@ async function main() {
       args: [t, threadId],
     });
     console.log(`thread legacy pre-E2EE plaintext room for @attic-lantern (no e2ee key)`);
+  }
+
+  // Transparency log checkpoints. Every consequential write above already
+  // appended a leaf (deals, confirmations, tiers, invites, referral settled);
+  // here we sign and cache a few Signed Tree Heads at intermediate sizes so the
+  // /transparency/log checkpoint history shows more than one anchored size out
+  // of the box, and a visitor can run a consistency proof BETWEEN two of them
+  // (proving the smaller tree is an exact prefix of the larger). The heads are a
+  // pure function of the leaves; caching them writes nothing an on-demand read
+  // would not have written the first time either surface is loaded.
+  {
+    const rs = await db.execute(`SELECT COUNT(*) AS n FROM translog_leaves`);
+    const size = Number(rs.rows[0]?.n ?? 0);
+    if (size > 0) {
+      const sizes = [...new Set(
+        [Math.ceil(size / 3), Math.ceil((2 * size) / 3), size].filter((s) => s >= 1),
+      )].sort((a, b) => a - b);
+      for (const s of sizes) await getSignedHead(s);
+      console.log(`translog: ${size} leaves, checkpoints signed at ${sizes.join(", ")}`);
+    }
   }
 
   console.log(

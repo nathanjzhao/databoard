@@ -49,6 +49,7 @@
 
 import { getDb, now } from "./db.ts";
 import { newId } from "./crypto.ts";
+import { appendLeafBestEffort } from "./translog.ts";
 import { isOperator } from "./moderation.ts";
 
 /* -------------------------------------------------------------- constants */
@@ -84,6 +85,69 @@ export const MAX_SETTLEMENT_CENTS = 100_000_000_00; // $100M; above that, a bank
 /** Cents accrued to an ancestor at `depth` from a whole-dollar share. */
 export function accrualCents(shareUsd: number, depth: number): number {
   return Math.round((shareUsd * 100) / Math.pow(REFERRAL_RATE_DENOM, depth));
+}
+
+/* ------------------------------------------ timely-recording fee credit (A)
+ *
+ * BUILDER 2 mechanism A, self-contained here so it does not tangle with the
+ * base accrual arithmetic above (which builder 1 also reads). A confirmed
+ * share earns a documented, capped reduction of the referral it owes up EVERY
+ * step of its chain when BOTH of these hold:
+ *
+ *   1. TIMELY. The deal carried a reporter-stated close date (deal_close_dates)
+ *      and it was recorded within TIMELY_RECORDING_WINDOW_MS of that date:
+ *      |recorded_at - stated_close_at| <= window. The window is symmetric, so a
+ *      far-future or far-past close date cannot buy the credit; only recording
+ *      close to when you say the deal actually closed does.
+ *   2. EVIDENCED. The earner committed an evidence hash on their OWN row
+ *      (deal_participants.evidence_hash). Recording promptly is not enough; you
+ *      also pin a document.
+ *
+ * When both hold the accrual to each ancestor is cut by TIMELY_EVIDENCE_CREDIT_BPS
+ * (20%), floored at zero, rounded once per (share, ancestor) pair exactly like
+ * the gross accrual. A deal with no close-date row, no evidence, or a late
+ * recording earns nothing, so every pre-existing accrual (no such rows exist
+ * before this feature) is unchanged. The credit is a carrot, never a penalty:
+ * it can only lower what is owed, never raise it, and never below zero.
+ */
+
+/** Recording within this window of the stated close date is "timely". 14 days. */
+export const TIMELY_RECORDING_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+/** The referral cut a timely, evidenced share earns up its whole chain. 20%. */
+export const TIMELY_EVIDENCE_CREDIT_BPS = 2000;
+
+/**
+ * The credit rate (basis points off the owed referral) an earning event earns,
+ * 0 or TIMELY_EVIDENCE_CREDIT_BPS. Pure and deterministic: no clock, both
+ * timestamps are stored. Null timestamps (a deal with no stated close date)
+ * or missing evidence yield 0.
+ */
+export function recordingCreditBps(
+  recordedAt: number | null,
+  statedCloseAt: number | null,
+  earnerCommittedEvidence: boolean,
+): number {
+  if (recordedAt == null || statedCloseAt == null) return 0;
+  if (!earnerCommittedEvidence) return 0;
+  if (Math.abs(recordedAt - statedCloseAt) > TIMELY_RECORDING_WINDOW_MS) return 0;
+  return TIMELY_EVIDENCE_CREDIT_BPS;
+}
+
+/**
+ * Accrual to an ancestor at `depth`, net of any timely-recording credit on the
+ * event. Never above the gross accrual, never below zero. This is the figure
+ * the ledger, the standing gate and the house floor all charge, so the credit
+ * is applied in exactly one place and every surface agrees on what is owed.
+ */
+export function netAccrualCents(
+  shareUsd: number,
+  depth: number,
+  creditBps: number,
+): number {
+  const gross = accrualCents(shareUsd, depth);
+  if (creditBps <= 0) return gross;
+  const credit = Math.floor((gross * Math.min(creditBps, 10000)) / 10000);
+  return Math.max(0, gross - credit);
 }
 
 /* ------------------------------------------------------------- the chain */
@@ -219,6 +283,12 @@ export type EarningEvent = {
   shareUsd: number;
   /** When the deal tipped to co-attested: its last confirmation timestamp. */
   accruedAt: number;
+  /**
+   * Timely-recording credit on THIS earner's share, basis points off the
+   * referral owed up every step (0 or TIMELY_EVIDENCE_CREDIT_BPS). See
+   * recordingCreditBps. Zero for every deal filed without a stated close date.
+   */
+  creditBps: number;
 };
 
 /**
@@ -241,11 +311,17 @@ export async function earningEventsFor(
   if (userIds.length === 0) return out;
   const db = await getDb();
   const placeholders = userIds.map(() => "?").join(", ");
+  // The timely-recording credit (A) needs, per earning row: whether this earner
+  // committed evidence (p.evidence_hash), and the deal's stated close date and
+  // recorded_at (deal_close_dates, LEFT JOIN so deals without one still count,
+  // just at zero credit). Nothing else about the credit leaves this query.
   const rs = await db.execute({
-    sql: `SELECT p.user_id, p.share_usd, p.deal_id,
+    sql: `SELECT p.user_id, p.share_usd, p.deal_id, p.evidence_hash,
+                 dc.stated_close_at, dc.recorded_at,
                  (SELECT MAX(q.confirmed_at) FROM deal_participants q
                    WHERE q.deal_id = p.deal_id AND q.status = 'confirmed') AS attested_at
             FROM deal_participants p
+            LEFT JOIN deal_close_dates dc ON dc.deal_id = p.deal_id
            WHERE p.user_id IN (${placeholders})
              AND p.status = 'confirmed'
              AND p.share_usd > 0
@@ -261,6 +337,11 @@ export async function earningEventsFor(
       dealId: String(r.deal_id),
       shareUsd: Number(r.share_usd),
       accruedAt: Number(r.attested_at ?? 0),
+      creditBps: recordingCreditBps(
+        r.recorded_at == null ? null : Number(r.recorded_at),
+        r.stated_close_at == null ? null : Number(r.stated_close_at),
+        r.evidence_hash != null,
+      ),
     });
     out.set(uid, list);
   }
@@ -284,7 +365,7 @@ export type DownlineRow = {
   depth: number;
   /** Their lifetime qualifying earnings, cents. */
   lifetimeEarningsCents: number;
-  /** What accrued to the viewer from those earnings, cents. */
+  /** What accrued to the viewer from those earnings, cents, net of any credit (A). */
   accruedCents: number;
   settledCents: number;
   outstandingCents: number;
@@ -296,7 +377,10 @@ export type DownlineRow = {
 export type UplineRow = {
   username: string;
   depth: number;
+  /** What the viewer owes this ancestor, cents, net of any timely-recording credit (A). */
   accruedCents: number;
+  /** How much the timely-recording credit knocked off this row: gross - net (A). */
+  creditedCents: number;
   settledCents: number;
   outstandingCents: number;
   disputed: boolean;
@@ -330,7 +414,7 @@ function oldestUncovered(
 ): number | null {
   let cumulative = 0;
   for (const e of events) {
-    cumulative += accrualCents(e.shareUsd, depth);
+    cumulative += netAccrualCents(e.shareUsd, depth, e.creditBps);
     if (cumulative > settledCents) return e.accruedAt;
   }
   return null;
@@ -393,7 +477,7 @@ export async function computeReferralLedger(userId: string): Promise<ReferralLed
   const downline: DownlineRow[] = descendants.map((d) => {
     const theirEvents = events.get(d.userId) ?? [];
     const accrued = theirEvents.reduce(
-      (s, e) => s + accrualCents(e.shareUsd, d.depth),
+      (s, e) => s + netAccrualCents(e.shareUsd, d.depth, e.creditBps),
       0,
     );
     const pairKey = `${d.userId}\x1f${userId}`;
@@ -413,8 +497,12 @@ export async function computeReferralLedger(userId: string): Promise<ReferralLed
 
   const myEvents = events.get(userId) ?? [];
   const upline: UplineRow[] = ancestors.map((a) => {
-    const accrued = myEvents.reduce(
+    const gross = myEvents.reduce(
       (s, e) => s + accrualCents(e.shareUsd, a.depth),
+      0,
+    );
+    const accrued = myEvents.reduce(
+      (s, e) => s + netAccrualCents(e.shareUsd, a.depth, e.creditBps),
       0,
     );
     const pairKey = `${userId}\x1f${a.userId}`;
@@ -424,6 +512,7 @@ export async function computeReferralLedger(userId: string): Promise<ReferralLed
       username: a.username,
       depth: a.depth,
       accruedCents: accrued,
+      creditedCents: Math.max(0, gross - accrued),
       settledCents: settled,
       outstandingCents: Math.max(0, accrued - settled),
       disputed: disputedPairs.has(pairKey),
@@ -493,7 +582,10 @@ export async function settlementStanding(userId: string): Promise<SettlementStan
   for (const a of payees) {
     if (disputedPayees.has(a.userId)) continue;
     const settled = settledByPayee.get(a.userId) ?? 0;
-    const accrued = events.reduce((s, e) => s + accrualCents(e.shareUsd, a.depth), 0);
+    const accrued = events.reduce(
+      (s, e) => s + netAccrualCents(e.shareUsd, a.depth, e.creditBps),
+      0,
+    );
     const outstanding = accrued - settled;
     if (outstanding < MIN_BLOCKING_OUTSTANDING_CENTS) continue;
     const oldest = oldestUncovered(events, a.depth, settled);
@@ -584,10 +676,22 @@ export async function confirmSettlement(
   const db = await getDb();
   const upd = await db.execute({
     sql: `UPDATE referral_settlements SET confirmed_by_payer = 1
-           WHERE id = ? AND payer_id = ? AND confirmed_by_payer = 0`,
+           WHERE id = ? AND payer_id = ? AND confirmed_by_payer = 0
+           RETURNING amount_cents`,
     args: [settlementId, payerId],
   });
-  if (upd.rowsAffected > 0) return { ok: true };
+  if (upd.rows.length > 0) {
+    // A mutually-confirmed referral settlement is a consequential, non-PII
+    // event. Log it best-effort; the amount is bucketed to $10k (referral
+    // fees are small, so effectively always "<$10k") and the subject is a
+    // blinded settlement id, never who paid whom.
+    const cents = Number(upd.rows[0].amount_cents ?? 0);
+    await appendLeafBestEffort(
+      { type: "referral_settled", subject: settlementId, totalUsd: Math.round(cents / 100) },
+      { dedupKey: `referral_settled:${settlementId}` },
+    );
+    return { ok: true };
+  }
   const rs = await db.execute({
     sql: `SELECT 1 FROM referral_settlements WHERE id = ? AND payer_id = ?`,
     args: [settlementId, payerId],
@@ -660,7 +764,10 @@ export async function houseFloorReceivables(viewerId: string): Promise<HouseRece
   for (const r of rootless) {
     const theirEvents = events.get(r.id) ?? [];
     if (theirEvents.length === 0) continue;
-    const accrued = theirEvents.reduce((s, e) => s + accrualCents(e.shareUsd, 1), 0);
+    const accrued = theirEvents.reduce(
+      (s, e) => s + netAccrualCents(e.shareUsd, 1, e.creditBps),
+      0,
+    );
     const settlements = settledByPayer.get(r.id) ?? [];
     const settled = sumSettled(settlements);
     out.push({

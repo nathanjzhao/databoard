@@ -20,13 +20,14 @@ import {
   StatusMark,
   SupplyMeter,
   TrackRecordChip,
+  TrustedRecorderBadge,
 } from "@/components/ask/meta";
 import { timeAgo } from "@/components/ask/format";
 import { TermsChip } from "@/components/ask/terms";
 import { getSessionUser } from "@/lib/auth";
 import { getDb, isDbConfigured } from "@/lib/db";
 import { recordedVolumeByUser } from "@/lib/stats";
-import { comparePriority, recordedVolumeChip } from "@/lib/matching";
+import { comparePriority, recordedVolumeChip, recorderStanding } from "@/lib/matching";
 import { ASK_STATUSES, CATEGORIES, unpackTags, type AskStatus } from "@/lib/taxonomy";
 import { isExclusivity, type Exclusivity } from "@/lib/terms";
 
@@ -272,9 +273,12 @@ export default async function BoardPage({
           <ul className="divide-y divide-rule">
             {asks.map((a) => {
               const closed = a.status === "closed";
-              const trackChip = recordedVolumeChip(
-                volumes.get(a.poster_id)?.volumeUsd ?? 0,
-              );
+              const vol = volumes.get(a.poster_id);
+              const trackChip = recordedVolumeChip(vol?.volumeUsd ?? 0);
+              const trustedRecorder = recorderStanding(
+                vol?.volumeUsd ?? 0,
+                vol?.evidenceBackedDeals ?? 0,
+              ).trusted;
               return (
                 <li key={a.id} className="relative">
                   <Link
@@ -301,6 +305,7 @@ export default async function BoardPage({
                         <ModalityTags tags={unpackTags(a.modality_tags)} dim={closed} />
                         <TermsChip exclusivity={a.exclusivity} dim={closed} />
                         {a.has_mandate === 1 ? <MandateMark dim={closed} /> : null}
+                        {trustedRecorder ? <TrustedRecorderBadge dim={closed} /> : null}
                         <TrackRecordChip chip={trackChip} dim={closed} />
                         <span className="font-mono text-[0.6875rem] text-ink-ghost">
                           @{a.username} · {timeAgo(a.created_at, nowMs)}

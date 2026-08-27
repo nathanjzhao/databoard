@@ -164,6 +164,32 @@ export function TrackRecordChip({
   );
 }
 
+/* ------------------------------------------------------ trusted recorder */
+
+/**
+ * A standing badge on the asks of a poster whose confirmed, evidenced recorded
+ * volume clears the trusted-recorder tier (lib/matching.ts
+ * TRUSTED_RECORDER_MIN_TIER). Unlike the plain track-record chip, which appears
+ * at any recorded volume, this marks the top standing tier and is the visible
+ * half of the tiered benefits: the same volume also lifts matching priority and
+ * the invite cap. Bucketed and boolean only; no exact figure reaches here.
+ */
+export function TrustedRecorderBadge({ dim = false }: { dim?: boolean }) {
+  return (
+    <span
+      className={[
+        "inline-flex items-center border px-1.5 py-0.5 font-mono text-[0.5625rem] uppercase tracking-[0.1em]",
+        dim
+          ? "border-rule text-ink-ghost"
+          : "border-green/50 bg-green-wash text-green",
+      ].join(" ")}
+      title="Trusted recorder: this poster's confirmed, evidenced recorded volume clears the top standing tier. Standing, not verification; it also lifts their matching priority and invite cap."
+    >
+      trusted recorder
+    </span>
+  );
+}
+
 /* ---------------------------------------------------------- status mark */
 
 const STATUS_STYLE: Record<AskStatus, { dot: string; text: string }> = {

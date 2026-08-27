@@ -43,7 +43,9 @@ export function LeaderboardBoard({
   rows: PublicLeaderboardRow[];
   viewerUsername: string;
 }) {
-  const [sortKey, setSortKey] = useState<LeaderboardSortKey>("collaborators");
+  // Default to the network-contribution headline: value brought to others, not
+  // raw self value. Bringing deals TO people is what the board rewards first.
+  const [sortKey, setSortKey] = useState<LeaderboardSortKey>("value_to_others");
   const ordered = [...rows].sort((a, b) => a.ranks[sortKey] - b.ranks[sortKey]);
 
   return (

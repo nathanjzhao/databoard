@@ -36,6 +36,8 @@ type Body = {
   myShareUsd?: number;
   note?: string;
   participants?: { username?: string; shareUsd?: number }[];
+  /** Optional reporter-stated close date, epoch ms; drives the fee credit (A). */
+  statedCloseAt?: number | null;
 };
 
 const ERROR_COPY: Record<Extract<CreateDealResult, { ok: false }>["error"], string> = {
@@ -119,6 +121,10 @@ export async function POST(request: Request) {
       myShareUsd: Number(body.myShareUsd),
       note: String(body.note ?? ""),
       participants,
+      statedCloseAt:
+        typeof body.statedCloseAt === "number" && Number.isFinite(body.statedCloseAt)
+          ? body.statedCloseAt
+          : null,
     });
     if (!result.ok) {
       return NextResponse.json(
