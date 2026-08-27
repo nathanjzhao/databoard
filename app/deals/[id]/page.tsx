@@ -18,10 +18,13 @@ import { SplitTable } from "@/components/deals/split-table";
 import { TierLadder, TierTag } from "@/components/deals/tier-ladder";
 import { ConfirmCard } from "@/components/deals/confirm-card";
 import { EvidenceCommit } from "@/components/deals/evidence-commit";
+import { ReceiptPanel } from "@/components/deals/receipt-panel";
 import { confirmedFraction, usdExact } from "@/components/deals/format";
 import { getSessionUser } from "@/lib/auth";
 import { isDbConfigured } from "@/lib/db";
+import { buyerShort } from "@/lib/crypto";
 import { getDealForUser, type DealDetail } from "@/lib/deals";
+import { encodeReceipt, receiptPayloadForDeal } from "@/lib/receipts";
 
 export const metadata: Metadata = { title: "Deal" };
 export const dynamic = "force-dynamic";
@@ -55,6 +58,11 @@ export default async function DealPage({
     deal.viewer.status === "confirmed" &&
     !deal.viewer.evidenceHash &&
     (deal.tier === "co_attested" || solo);
+
+  // A co-attested-or-better deal mints a portable receipt; a claimed or solo
+  // deal mints nothing, so the affordance simply is not there.
+  const receiptPayload = receiptPayloadForDeal(deal);
+  const receiptToken = receiptPayload ? encodeReceipt(receiptPayload) : null;
 
   return (
     <div className="mx-auto w-full max-w-[900px] px-5 py-12">
@@ -121,6 +129,25 @@ export default async function DealPage({
           <SplitTable split={deal.split} totalUsd={deal.totalUsd} viewerId={user.id} />
         </div>
       </section>
+
+      {/* ------------------------------------------------------ receipt */}
+      {receiptToken && receiptPayload ? (
+        <section className="mt-8">
+          <h2 className="bt-label">Receipt</h2>
+          <div className="mt-3">
+            <ReceiptPanel
+              token={receiptToken}
+              attests={{
+                tier: receiptPayload.tier,
+                participants: receiptPayload.participants,
+                amountBucket: receiptPayload.amountBucket,
+                buyerShort: buyerShort(deal.buyerToken),
+                buyerIsOther: deal.buyerIsOther,
+              }}
+            />
+          </div>
+        </section>
+      ) : null}
 
       {/* ----------------------------------------------------- timeline */}
       <section className="mt-8">

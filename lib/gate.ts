@@ -25,6 +25,11 @@ const PUBLIC_PATHS = new Set([
   "/signup",
   "/transparency",
   "/api/voprf/pubkey",
+  // The receipt verifier is public on purpose: a portable receipt is worth
+  // nothing if a counterparty needs an account to check it. Verification is a
+  // pure HMAC recompute (lib/receipts.ts), no session, no database.
+  "/receipts/verify",
+  "/api/receipts/verify",
 ]);
 
 /**
