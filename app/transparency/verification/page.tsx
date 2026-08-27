@@ -33,10 +33,11 @@ const CONTENTS = [
   ["02", "co-attested", "Co-attested"],
   ["03", "evidence", "Evidence committed"],
   ["04", "asks", "The ask rungs"],
-  ["05", "payment", "Payment rails"],
-  ["06", "proofs", "Cryptographic proofs"],
-  ["07", "token", "The buyer token problem"],
-  ["08", "words", "The words"],
+  ["05", "receipts", "Portable receipts"],
+  ["06", "payment", "Payment rails"],
+  ["07", "proofs", "Cryptographic proofs"],
+  ["08", "token", "The buyer token problem"],
+  ["09", "words", "The words"],
 ] as const;
 
 /** Why each planned mechanism cannot, on its own, bind a hidden payer to our token. */
@@ -251,6 +252,57 @@ export default function VerificationPage() {
               of the custody.
             </p>
           </div>
+
+          <div className="mt-6 border border-rule bg-panel px-5 py-4">
+            <div className="bt-label">What the leaderboard does with these tiers</div>
+            <p className="mt-2 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              The two dollar columns on the leaderboard are tier-weighted, so a
+              dollar somebody bothered to evidence-commit is worth more standing
+              than a bare co-attestation:
+            </p>
+            <ul className="mt-3 space-y-1 font-mono text-[0.75rem] text-ink-dim">
+              <li>evidence committed &rarr; 1.0</li>
+              <li>co-attested &rarr; 0.5</li>
+              <li>claimed / solo &rarr; 0</li>
+            </ul>
+            <p className="mt-3 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              The weight decides reputation only. The referral fee accrues on
+              the full confirmed share at every tier (
+              <Link href="/terms#referrals" className="text-blue hover:text-amber">
+                /terms
+              </Link>
+              , section 08), so a co-attested dollar owes exactly what an
+              evidence-committed dollar owes and simply carries less standing.
+              The predicate that makes a share count at all is identical for
+              reputation and for the fee: at least one named counterparty
+              confirmed. Weighting never zeroes a dollar the fee still charges.
+            </p>
+          </div>
+
+          <div className="mt-4 border-l-2 border-amber bg-amber-wash px-4 py-3.5">
+            <div className="bt-label text-amber">Confirmations from your own tree</div>
+            <p className="mt-2 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Co-attestation is only worth something if the counterparty is
+              somebody else. So a confirmation from an account that is
+              sybil-dependent on the reporter, meaning it sits inside the
+              reporter&apos;s own invite subtree, or shares an invite ancestor
+              within two hops of them, earns the reporter FULL fee accrual and
+              ZERO collaborator and value-to-others credit, until that account
+              has independent history: older than fourteen days AND a confirmed
+              party to at least one deal whose other confirmed parties all sit
+              outside the reporter&apos;s cluster. One real deal with a stranger
+              lifts it; a wall of deals inside the cluster does not. This is the
+              cheap-Sybil answer for reputation specifically: minting accounts to
+              confirm your own deals still costs you every fee it would have
+              cost, and now buys no standing until the minted account grows a
+              history of its own. It does not make Sybils impossible, for the
+              reasons the co-attested section already gives; it removes the
+              reputation payoff for the one Sybil shape the invite graph can
+              actually see. The exact weights and this rule live in{" "}
+              <span className="font-mono text-[0.75rem]">lib/stats.ts</span> and{" "}
+              <span className="font-mono text-[0.75rem]">lib/independence.ts</span>.
+            </p>
+          </div>
         </TSection>
 
         <TSection
@@ -299,8 +351,63 @@ export default function VerificationPage() {
         </TSection>
 
         <TSection
-          id="payment"
+          id="receipts"
           num="05"
+          title="Portable receipts"
+          lede="A co-attested-or-better deal can mint a compact, platform-signed token that binds its tier, its confirmed handles, the blinded buyer, and the amount rounded to a $10k bucket, never the exact figure. Anyone can paste it into /receipts/verify and confirm it is genuine and unaltered, no account needed. It is the off-platform track record that makes recording a deal worth its fee. A claimed or solo deal mints nothing."
+        >
+          <p className="max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
+            The signature is a shared-secret MAC, HMAC(SERVER_PEPPER, canonical
+            receipt), not a public-key signature. Read that as the limit it is:
+            the platform holds the key, so the platform can forge its own
+            receipts. A verifying receipt therefore proves &quot;DataBoard
+            vouches this deal was recorded here&quot;, at the tier and bucket
+            shown, between the handles shown, and nothing stronger. It does not
+            prove who paid, that the amount is real, or that the platform did not
+            mint it. That is the same operator-attested trust tier as the rest of
+            this surface, and it upgrades along the same path: the attested
+            verifier in section 08 would emit exactly this kind of minimal
+            receipt, but signed inside a measured enclave the operator cannot
+            forge from.
+          </p>
+
+          <div className="mt-5 border border-rule bg-panel px-5 py-4">
+            <div className="bt-label">What a receipt carries</div>
+            <ul className="mt-2 space-y-1 font-mono text-[0.75rem] leading-relaxed text-ink-dim">
+              <li>tier: co-attested or evidence-committed (never claimed)</li>
+              <li>participants: every confirmed handle on the deal</li>
+              <li>buyer: the same blinded token the board carries</li>
+              <li>amount: rounded to the nearest $10k bucket, not the exact total</li>
+              <li>attested_at, deal id, schema hash + commit at signing time</li>
+            </ul>
+            <p className="mt-3 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Everything in it is metadata already visible to the deal&apos;s own
+              participants, minus the exact amount. No message content, no
+              contact, no real name, no de-blinded buyer. The token is a
+              deterministic function of deal state, so the same attested deal
+              mints the same bytes; a receipt also verifies only against the
+              pepper that signed it, so one minted on a dev instance is genuine
+              only there.
+            </p>
+          </div>
+
+          <div className="mt-4 border-l-2 border-amber bg-amber-wash px-4 py-3.5">
+            <div className="bt-label text-amber">Why this is the bribe, not a badge</div>
+            <p className="mt-2 max-w-[62ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Only an attested deal mints, and attesting is the same event that
+              accrues the referral fee. So the artifact that gives you a portable
+              track record is one you can only get by recording the deal on the
+              record, where it also owes its fee. Recording buys the receipt and
+              the matching priority in the same act; a unilateral claim buys
+              neither. The mint path is{" "}
+              <span className="font-mono text-[0.75rem]">lib/receipts.ts</span>.
+            </p>
+          </div>
+        </TSection>
+
+        <TSection
+          id="payment"
+          num="06"
           title="Planned: payment rails"
           lede="The next rung up is money: independent evidence that funds posted or were released, bound to one specific deal. Nothing in this section is built. Time estimates are engineering guesses that exclude vendor approval, security audits, and legal review, which is where such estimates usually go to die."
         >
@@ -333,7 +440,7 @@ export default function VerificationPage() {
 
         <TSection
           id="proofs"
-          num="06"
+          num="07"
           title="Planned: cryptographic proofs"
           lede="Cryptography can move parts of this from trust-the-platform to check-the-math. The tooling is real and moving quickly, and much of it is not production-grade; the maturity chips below repeat what the projects say about themselves, not what their landing pages imply."
         >
@@ -342,7 +449,7 @@ export default function VerificationPage() {
 
         <TSection
           id="token"
-          num="07"
+          num="08"
           title="The buyer token problem"
           lede="The honest negative result, and the reason a payer-bound rung is future work rather than a sprint. None of the mechanisms above can produce our buyer token from a hidden payer on its own."
         >
@@ -431,7 +538,7 @@ export default function VerificationPage() {
 
         <TSection
           id="words"
-          num="08"
+          num="09"
           title="The words"
           lede="One vocabulary, used identically on the deal pages, the leaderboard, and here, so that a tier name is a commitment you can hold us to rather than a mood."
         >
