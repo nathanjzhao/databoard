@@ -37,7 +37,8 @@ const CONTENTS = [
   ["06", "payment", "Payment rails"],
   ["07", "proofs", "Cryptographic proofs"],
   ["08", "token", "The buyer token problem"],
-  ["09", "words", "The words"],
+  ["09", "leakage", "What we cannot enforce"],
+  ["10", "words", "The words"],
 ] as const;
 
 /** Why each planned mechanism cannot, on its own, bind a hidden payer to our token. */
@@ -537,8 +538,72 @@ export default function VerificationPage() {
         </TSection>
 
         <TSection
-          id="words"
+          id="leakage"
           num="09"
+          title="What we cannot enforce"
+          lede="The referral fee is a price on being on the record, not a tax we can collect from deals we never see. An adversarial review of our own mechanics produced these limits. They are structural, not bugs, and the honest thing is to name them rather than imply a wall where there is a toll booth."
+        >
+          <ul className="space-y-3">
+            <li className="border border-rule bg-panel px-5 py-4">
+              <div className="bt-label">Non-recording is unpreventable</div>
+              <p className="mt-2 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+                Two people who meet here, close off-platform, and record
+                nothing owe nothing, and there is no mechanism that could know.
+                Messages are end-to-end encrypted by design, so we cannot read
+                them; the fee applies only to deals a member chooses to put on
+                the record. What the platform sells is the value of being on
+                the record: a portable receipt, matching priority, reputation.
+                If that value exceeds the fee, recording is rational. If it
+                does not, it is not, and no rule changes that.
+              </p>
+            </li>
+            <li className="border border-rule bg-panel px-5 py-4">
+              <div className="bt-label">Amounts are self-declared</div>
+              <p className="mt-2 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+                A recorded share is a number the parties typed. Verifying it
+                against a real settlement would require the payment
+                surveillance we do not have and the buyer de-blinding we
+                refuse. So understatement cannot be detected per instance. It
+                is priced instead: the party who loses the fee, the upline,
+                can see and dispute the receivable, and a deal whose amount is
+                evidence-committed counts for more reputation per dollar than a
+                bare self-report. The payment rung, if it ships, is the only
+                thing that verifies an amount rather than pricing dishonesty.
+              </p>
+            </li>
+            <li className="border border-rule bg-panel px-5 py-4">
+              <div className="bt-label">Sybils cannot be pierced under no-PII</div>
+              <p className="mt-2 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+                Handles are cheap and we store nothing that ties two of them to
+                one person, on purpose. Every defense here raises the cost of a
+                fake account rather than making it impossible: a sock has no
+                history, and history is the thing the board sells, so a fresh
+                account is slow and single-use rather than free and unlimited.
+                Reputation from a counterparty inside your own invite subtree
+                counts for nothing until that account earns independent
+                history. This prices self-dealing; it does not end it.
+              </p>
+            </li>
+            <li className="border-l-2 border-amber bg-amber-wash px-4 py-3.5">
+              <div className="bt-label text-amber">The only real fixes</div>
+              <p className="mt-2 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+                Two things actually enforce rather than price. At-source
+                deduction through a payment rail (see Payment rails) removes
+                the fee before the money reaches the earner, so no honesty is
+                required; it needs the earner to pay on-rail. And the network
+                itself: if this is where the buyers, the track records, and the
+                next deal are, being on the record is worth more than the 2.5%,
+                and the fee collects on exactly the deals where that was true.
+                Everything else on this page removes the costless evasion. It
+                does not pretend the fee is a wall.
+              </p>
+            </li>
+          </ul>
+        </TSection>
+
+        <TSection
+          id="words"
+          num="10"
           title="The words"
           lede="One vocabulary, used identically on the deal pages, the leaderboard, and here, so that a tier name is a commitment you can hold us to rather than a mood."
         >
