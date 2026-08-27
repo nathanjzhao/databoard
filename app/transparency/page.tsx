@@ -451,10 +451,13 @@ export default async function TransparencyPage() {
                 Honest boundary, in full on the log page: the signing key is
                 derived from SERVER_PEPPER, so the operator can sign a fork.
                 What the design buys is detectability, not impossibility, a
-                consistency proof plus the head committed to git catches a
-                rewrite of history others have pulled. Independent co-signing
-                witnesses and a TEE-held key are the upgrade, and are named as
-                future work.
+                consistency proof plus two external anchors catch a rewrite of
+                history others have pulled: the head is committed to git AND
+                stamped into Bitcoin with OpenTimestamps (proofs under
+                docs/transparency-log/ots/), so backdating or forking past an
+                anchored point is detectable independent of our own git.
+                Independent co-signing witnesses and a TEE-held key are the
+                remaining upgrade, and are named as future work.
               </p>
               <p className="mt-4 text-[0.8125rem] leading-relaxed text-ink-dim">
                 <Link href="/transparency/log" className="text-blue hover:text-amber">

@@ -1,0 +1,29 @@
+{
+  "file": "docs/transparency-log/sth-3.json",
+  "label": "sth-3",
+  "sha256": "9cf02012d8994bf51e9da612ef03fe0a56f48d56123bb63079b0c83a7b0301ef",
+  "calendars": [
+    {
+      "name": "alice",
+      "url": "https://alice.btc.calendar.opentimestamps.org",
+      "otsBytes": 272
+    },
+    {
+      "name": "bob",
+      "url": "https://bob.btc.calendar.opentimestamps.org",
+      "otsBytes": 235
+    },
+    {
+      "name": "finney",
+      "url": "https://finney.calendar.eternitywall.com",
+      "otsBytes": 256
+    },
+    {
+      "name": "pool-a",
+      "url": "https://a.pool.opentimestamps.org",
+      "otsBytes": 272
+    }
+  ],
+  "pending": true,
+  "stampedAt": 1787850461867
+}

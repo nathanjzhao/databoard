@@ -172,9 +172,19 @@ export default async function TransparencyLogPage() {
           <a href={GH_ANCHORS} className="font-mono text-blue hover:text-amber">
             docs/transparency-log/
           </a>{" "}
-          as an external, tamper-evident witness: once a head is in the public
-          git history others have pulled, the operator cannot quietly rewrite
-          the log without the two disagreeing.
+          as one external witness, and each is stamped into Bitcoin with
+          OpenTimestamps (the <span className="font-mono">.ots</span> proofs sit
+          beside them under{" "}
+          <a
+            href={`${GH_ANCHORS}/ots`}
+            className="font-mono text-blue hover:text-amber"
+          >
+            ots/
+          </a>
+          ) as a second one the operator does not control. Once a head is in the
+          public git history others have pulled, or anchored in Bitcoin, the
+          operator cannot quietly rewrite the log without the witnesses
+          disagreeing.
         </p>
         {heads.length > 0 ? (
           <div className="mt-3 overflow-x-auto border border-rule">
@@ -230,22 +240,48 @@ export default async function TransparencyLogPage() {
               The log signing key is HMAC-derived from SERVER_PEPPER, which the
               operator holds, so the operator CAN sign a fork of the log. What
               the design buys is not impossibility but detectability: a
-              consistency proof plus the external git anchor means a rewrite of
+              consistency proof plus the external anchors means a rewrite of
               history others have already pulled, or a second fork served to
               someone else, is caught after the fact. It is append-only against
               an observer who keeps a head, not append-only by physics.
             </p>
           </div>
+          <div className="border-l-2 border-green bg-green-wash px-4 py-3.5">
+            <div className="bt-label text-green">
+              Anchored in Bitcoin (OpenTimestamps)
+            </div>
+            <p className="mt-2 max-w-[66ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Each signed head is stamped into Bitcoin with OpenTimestamps and
+              the <span className="font-mono text-[0.75rem]">.ots</span> proofs
+              are committed under{" "}
+              <a
+                href={`${GH_ANCHORS}/ots`}
+                className="font-mono text-blue hover:text-amber"
+              >
+                docs/transparency-log/ots/
+              </a>
+              . That anchors the head&apos;s hash into a timestamp the operator
+              cannot backdate or fork past, independent of our own git. Anyone
+              can complete and check a proof with the standard{" "}
+              <span className="font-mono text-[0.75rem]">ots</span> client
+              (verify against the SHA-256 of the matching{" "}
+              <span className="font-mono text-[0.75rem]">sth-&lt;n&gt;.json</span>);
+              the stamping script (<span className="font-mono text-[0.75rem]">scripts/ots-anchor.ts</span>)
+              speaks the calendar API directly, with no new dependency. Fresh
+              stamps are pending Bitcoin confirmation, which takes hours; that is
+              the ordinary OpenTimestamps lifecycle, not a half-proof.
+            </p>
+          </div>
           <div className="border-l-2 border-rule-strong bg-panel px-4 py-3.5">
-            <div className="bt-label">The real upgrade</div>
+            <div className="bt-label">The remaining upgrade</div>
             <p className="mt-2 max-w-[66ch] text-[0.8438rem] leading-relaxed text-ink-dim">
               Stated so the gap above is a roadmap, not a shrug: independent
-              witnesses that co-sign the tree head (so no single party, us
-              included, can fork it unnoticed), a public timestamping stamp of
-              each head (OpenTimestamps), and a log key held inside measured
-              hardware (a TEE) so the running code proves its own identity.
-              Those move &quot;detectable&quot; toward &quot;impossible to
-              attempt.&quot; They are future work.
+              witnesses that co-sign the tree head (the sigsum / Certificate
+              Transparency witness model, so no single party, us included, can
+              fork it unnoticed), and a log key held inside measured hardware (a
+              TEE) so the running code proves its own identity. With the Bitcoin
+              anchor already in place, those move &quot;detectable&quot; toward
+              &quot;impossible to attempt.&quot; They are future work.
             </p>
           </div>
         </div>
