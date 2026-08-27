@@ -183,8 +183,11 @@ test("01 H1 POISON PILL: an eternally-pending sock participant no longer zeroes 
   expect(r.oldSock, "the old NOT-EXISTS-pending clause zeroed the poisoned deal").toBe(0);
   expect(r.oldClean).toBe(125000);
 
-  // The asymmetry the hole rode: reputation ($50k) landed while the old fee was $0.
-  expect(r.repSock).toBe(50000);
+  // The asymmetry the hole rode: reputation landed while the old fee was $0.
+  // Feature C tier-weights the leaderboard's own-value column: a co-attested
+  // deal (the pending sock keeps it off the evidence rung) counts at 0.5, so
+  // the $50k own share shows as $25k of reputation. The fee is untouched above.
+  expect(r.repSock).toBe(25000);
 });
 
 /* -------------------------------------------------------- 2 H2 SOLO CLAIM */
@@ -230,18 +233,22 @@ test("02 H2 SOLO CLAIM: a $500k solo claim adds zero ranked value and cannot out
   `,
   );
 
-  // The $500k solo adds nothing to the ranked column; it lives only in the claim figure.
-  expect(r.aValueToSelf).toBe(30000);
+  // The $500k solo adds nothing to the ranked column; it lives only in the claim
+  // figure. The co-attested $30k is tier-weighted at 0.5 (feature C) to $15k of
+  // ranked value; the solo still folds into none of it.
+  expect(r.aValueToSelf).toBe(15000);
   expect(r.aClaimed).toBe(500000);
   expect(r.boardClaimed).toBe(500000);
 
-  // The co-attested $200k ranks above acct-a's ranked $30k. The solo did not move acct-a up.
-  expect(r.bValueToSelf).toBe(200000);
+  // The co-attested $200k (weighted 0.5 -> $100k) ranks above acct-a's ranked
+  // $15k. The solo did not move acct-a up.
+  expect(r.bValueToSelf).toBe(100000);
   expect(r.rankB).toBe(1);
   expect(r.rankA).toBe(2);
 
-  // Counterfactual: the old rule would have ranked acct-a first on $530k.
-  expect(r.oldRankedA).toBe(530000);
+  // Counterfactual: the old rule would have folded the solo into the ranked
+  // column ($15k weighted co-attested + $500k solo), outranking b's $100k.
+  expect(r.oldRankedA).toBe(515000);
   expect(
     r.oldRankedA as number,
     "old rule: the solo claim outranks a real co-attested deal",

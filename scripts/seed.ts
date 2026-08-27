@@ -281,13 +281,21 @@ type DealSeed = {
 
 /**
  * Five demo deals, exercising every state the ledger and leaderboard render:
- * one evidence-committed (tier 2), two co-attested (one with a declined
- * share, which counts nowhere), one solo claim (the unranked claimed-
- * unattested figure on the leaderboard), one co-attested deal carrying a
- * counterparty that has sat pending long enough to read as chronic (the
- * never-confirmed structure signal the upline sees). Created through the
- * REAL code paths in lib/deals.ts, so the trigger, the tier derivation and
- * the leaderboard read exactly what production writes.
+ * one evidence-committed (tier 2, every counted dollar weighted 1.0 on the
+ * board), two co-attested (weighted 0.5; one carries a declined share, which
+ * counts nowhere), one solo claim (the unranked claimed-unattested figure),
+ * one co-attested deal (index 4, reported by cold-copy) that carries a
+ * counterparty sitting pending long enough to read as chronic AND is confirmed
+ * by cold-copy's own inviter quiet-ledger. That last confirmation is
+ * WITHIN-branch: reporter and confirmer share the non-root ancestor
+ * quiet-ledger within two hops, so the sybil-independence rule (lib/independence
+ * .ts) grants cold-copy zero collaborator and value-to-others credit for it
+ * while the referral fee on the share is still owed in full. The cross-branch
+ * confirmations on the other deals share only the root and count normally, so
+ * the board shows real brought-in figures beside the one discounted case.
+ * Created through the REAL code paths in lib/deals.ts, so the trigger, the tier
+ * derivation, the referral accrual and the leaderboard read exactly what
+ * production writes.
  */
 const DEALS: DealSeed[] = [
   {
@@ -520,15 +528,24 @@ async function main() {
   // The invite genealogy, through the REAL paths: every edge is a code the
   // inviter minted (mintInvite, cap and all) and the invitee spent
   // (consumeInvite), so the used-by lists and the referral ledger read
-  // exactly what production writes. marble-pennant is the origin;
-  // quiet-ledger roots the member tree at depth 1 beneath it, so every
-  // seeded chain, and every future chain grown from these members' codes,
-  // traces back to the operator account. attic-lantern (created below)
-  // deliberately keeps NO edge: it is the grandfathered pre-invite account,
-  // and /invites shows that state honestly.
+  // exactly what production writes. marble-pennant is the origin, and it seeds
+  // TWO sibling branches directly beneath it: quiet-ledger (with midnight-audit
+  // and cold-copy under it) and granite-fox (with paper-trail and vellum under
+  // it). Two branches on purpose: the sybil-independence rule (lib/independence
+  // .ts) discounts a confirmation from a counterparty inside the reporter's own
+  // subtree or sharing a NON-root ancestor within two hops, and roots are
+  // excluded from that test. So cross-branch co-attestation (quiet-ledger's
+  // branch confirming granite-fox's, and back) shares only the root and counts
+  // in full, giving the leaderboard real collaborator and value-to-others
+  // figures; a confirmation WITHIN one branch (cold-copy's deal confirmed by
+  // its own inviter quiet-ledger, deal 5 below) shares a non-root ancestor and
+  // is reputation-discounted, the rule visible on seed data. If the whole
+  // member tree hung under one non-root hub instead, every pair would share it
+  // and the entire brought-in board would zero out. attic-lantern (created
+  // below) deliberately keeps NO edge: the grandfathered pre-invite account.
   const EDGES: [inviter: string, invitee: string][] = [
     ["marble-pennant", "quiet-ledger"],
-    ["quiet-ledger", "granite-fox"],
+    ["marble-pennant", "granite-fox"],
     ["quiet-ledger", "midnight-audit"],
     ["quiet-ledger", "cold-copy"],
     ["granite-fox", "paper-trail"],
@@ -548,9 +565,19 @@ async function main() {
       if (!minted.ok) throw new Error(`seed spare invite for ${u.username}: ${minted.error}`);
     }
   }
+  // Extra codes from the ROOT operator. The deals suite signs its three test
+  // accounts up on marble-pennant codes on purpose: children of the root share
+  // only the root, so the independence rule (which excludes roots) leaves them
+  // sybil-INDEPENDENT of each other, and the suite's exact leaderboard figures
+  // are the un-discounted tier-weighted ones. Minted through the real path; the
+  // count is headroom above the three that suite spends.
+  for (let i = 0; i < 3; i++) {
+    const minted = await mintInvite(userIds.get("marble-pennant")!);
+    if (!minted.ok) throw new Error(`seed extra root invite: ${minted.error}`);
+  }
   console.log(
     `invites: ${EDGES.length} edges recorded (origin marble-pennant), ` +
-      `${USERS.length * 3} unused codes minted`,
+      `${USERS.length * 3 + 3} unused codes minted`,
   );
 
   const day = 24 * 60 * 60 * 1000;

@@ -26,7 +26,12 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { KNOWN_BUYERS } from "../lib/buyers";
-import { unusedInviteCode } from "./invite-codes";
+import { unusedInviteCodeFrom } from "./invite-codes";
+import {
+  isDiscountedConfirmer,
+  type IndependenceContext,
+  type InviteGraph,
+} from "../lib/independence";
 
 const ROOT = path.resolve(__dirname, "..");
 const VERIFY_DIR = path.join(ROOT, "verify", "deals");
@@ -128,8 +133,12 @@ async function signUp(
 ) {
   await p.goto("/signup");
   await expect(p.getByText("Say who you are, once")).toBeVisible();
-  // Invite-only: a seeded member's unused code, read from the local DB.
-  await p.getByLabel("Invite code").fill(await unusedInviteCode());
+  // Invite-only, and specifically on the ROOT operator's code: C, D and E must
+  // be sybil-INDEPENDENT of each other for the exact leaderboard sums below to
+  // be the un-discounted tier-weighted figures. Children of the root share only
+  // the root, which the independence rule excludes, so none of their mutual
+  // confirmations is reputation-discounted (lib/independence.ts).
+  await p.getByLabel("Invite code").fill(await unusedInviteCodeFrom("marble-pennant"));
   await p.getByLabel("Real name").fill(opts.realName);
   if (opts.org) {
     await p.getByRole("button", { name: "An organization" }).click();
@@ -321,14 +330,65 @@ function cappedCount(timestamps: number[]): number {
   return count;
 }
 
-/** The counting rules (a), (b), (c) plus tier, from raw rows. */
-function computeExpectedBoard(rows: PRow[]): Map<string, Metrics> {
+/**
+ * Tier reputation weight, reimplemented from the spec independently of
+ * lib/stats.ts: evidence-committed shares count 1.0, any other confirmed share
+ * 0.5, an unconfirmed deal 0. A still-pending named party keeps a deal off the
+ * evidence-committed rung, so it earns the 0.5 weight until it settles.
+ */
+function tierWeight(dealRows: PRow[]): number {
+  const named = dealRows.filter((r) => r.role === "participant");
+  const confirmed = named.filter((r) => r.status === "confirmed");
+  if (confirmed.length === 0) return 0;
+  const anyPending = named.some((r) => r.status === "pending");
+  const reporter = dealRows.find((r) => r.role === "reporter");
+  const evidenceCommitted =
+    !anyPending &&
+    Boolean(reporter?.evidenceHash) &&
+    confirmed.every((r) => Boolean(r.evidenceHash));
+  return evidenceCommitted ? 1.0 : 0.5;
+}
+
+/**
+ * The counting rules (a), (b), (c), plus the feature-C tier weighting and the
+ * sybil-independence discount, from raw rows. The arithmetic (the caps, the
+ * weights, the value sums) is reimplemented here independently of lib/stats.ts;
+ * only the invite-graph relationship predicate, which confirmer is
+ * sybil-dependent on a reporter without independent history, is shared from
+ * lib/independence, because reimplementing the closure / descendant /
+ * root-exclusion / independence walk would duplicate it, not check it.
+ */
+async function computeExpectedBoard(rows: PRow[]): Promise<Map<string, Metrics>> {
   const byDeal = new Map<string, PRow[]>();
   for (const r of rows) {
     const list = byDeal.get(r.dealId) ?? [];
     list.push(r);
     byDeal.set(r.dealId, list);
   }
+
+  // The sybil context: invite graph, account ages, confirmed-peer lists. Read
+  // from the same DB file the test drives, mirroring lib/stats' own build.
+  const client = createClient({ url: `file:${DB_PATH}` });
+  const [edgesRs, usersRs] = await Promise.all([
+    client.execute(`SELECT user_id, inviter_id FROM invite_edges`),
+    client.execute(`SELECT id, created_at FROM users`),
+  ]);
+  client.close();
+  const parentOf = new Map<string, string>();
+  for (const e of edgesRs.rows) parentOf.set(String(e.user_id), String(e.inviter_id));
+  const graph: InviteGraph = { parentOf };
+  const createdAt = new Map<string, number>();
+  for (const u of usersRs.rows) createdAt.set(String(u.id), Number(u.created_at));
+  const confirmedPeers = new Map<string, string[][]>();
+  for (const dealRows of byDeal.values()) {
+    const ids = dealRows.filter((r) => r.status === "confirmed").map((r) => r.userId);
+    for (const id of ids) {
+      const list = confirmedPeers.get(id) ?? [];
+      list.push(ids.filter((o) => o !== id));
+      confirmedPeers.set(id, list);
+    }
+  }
+  const ctx: IndependenceContext = { graph, createdAt, confirmedPeers, now: Date.now() };
 
   const metrics = new Map<string, Metrics>();
   const pairEvents = new Map<string, Map<string, number[]>>();
@@ -359,25 +419,41 @@ function computeExpectedBoard(rows: PRow[]): Map<string, Metrics> {
     const named = dealRows.filter((r) => r.role === "participant");
     const confirmed = named.filter((r) => r.status === "confirmed");
     const solo = named.length === 0;
+    const weight = tierWeight(dealRows);
     const rep = get(reporter.username);
 
+    // (a)+(b): confirmed counterparties, tier-weighted. A sybil-dependent
+    // confirmer with no independent history earns the reporter zero
+    // collaborator and value-to-others credit (fees still accrue elsewhere).
     for (const p of confirmed) {
-      rep.valueToOthersUsd += p.shareUsd;
+      if (isDiscountedConfirmer(ctx, reporter.userId, p.userId)) continue;
+      rep.valueToOthersUsd += p.shareUsd * weight;
       const mine = pairEvents.get(reporter.username) ?? new Map<string, number[]>();
       const events = mine.get(p.userId) ?? [];
       events.push(p.confirmedAt ?? 0);
       mine.set(p.userId, events);
       pairEvents.set(reporter.username, mine);
       note(rep, p.confirmedAt);
-      const own = get(p.username);
-      own.valueToSelfUsd += p.shareUsd;
-      note(own, p.confirmedAt);
     }
-    // A solo deal is a unilateral claim: it earns nothing on the ranked self
-    // column and notes no ranking timestamp, exactly as lib/stats.ts does (H2).
-    // Only a deal at least one counterparty has co-signed credits the reporter.
+    // (c) reporter's own share, tier-weighted, once a counterparty co-signed.
+    // A solo deal earns nothing ranked and notes no timestamp (H2). Own share
+    // is never sybil-discounted.
     if (!solo && confirmed.length > 0) {
-      rep.valueToSelfUsd += reporter.shareUsd;
+      rep.valueToSelfUsd += reporter.shareUsd * weight;
+      note(
+        rep,
+        confirmed.reduce<number | null>(
+          (m, p) =>
+            p.confirmedAt == null ? m : m == null ? p.confirmedAt : Math.min(m, p.confirmedAt),
+          null,
+        ),
+      );
+    }
+    // (c) each confirmer's own share on someone else's deal, tier-weighted.
+    for (const p of confirmed) {
+      const own = get(p.username);
+      own.valueToSelfUsd += p.shareUsd * weight;
+      note(own, p.confirmedAt);
     }
 
     // Tier: claimed unless every named row answered and at least one
@@ -430,7 +506,7 @@ async function expectExactSums(
   who: string,
   want: Pick<Metrics, "collaborators" | "valueToOthersUsd" | "valueToSelfUsd">,
 ) {
-  const m = computeExpectedBoard(await fetchParticipantRows()).get(who);
+  const m = (await computeExpectedBoard(await fetchParticipantRows())).get(who);
   expect(m, `no participant rows at all for ${who}`).toBeTruthy();
   expect(
     {
@@ -571,19 +647,22 @@ test("03 D confirms from the split table; 1 of 2 confirmed; leaderboard credits 
   await expect(page.getByText("1 of 2 confirmed")).toBeVisible();
   await shot(page, "deals-d-1-of-2");
 
-  // Leaderboard: C has 1 collaborator, $30k to others, $40k self; D $30k
-  // self; E nowhere.
+  // Leaderboard: C has 1 collaborator; D's $30k and C's $40k own share each
+  // count at the co-attested 0.5 weight, so C shows $20k to others / $20k self,
+  // D $20k self; E nowhere.
   await page.goto("/leaderboard");
+  // Co-attested weight 0.5 applies once one party confirms, even while E is
+  // still pending: D's $30k and C's $40k own share each count at half.
   await expectBoardRow(page, USER_C.username, {
     collaborators: "1",
-    toOthers: "$30k",
-    toSelf: "$40k",
+    toOthers: "$20k",
+    toSelf: "$20k",
     evidence: "0",
   });
   await expectBoardRow(page, USER_D.username, {
     collaborators: "0",
     toOthers: "<$10k",
-    toSelf: "$30k",
+    toSelf: "$20k",
     evidence: "0",
   });
   await expect(boardRow(page, USER_E.username)).toHaveCount(0);
@@ -593,13 +672,13 @@ test("03 D confirms from the split table; 1 of 2 confirmed; leaderboard credits 
   // The exact sums underneath, from raw rows, independently recomputed.
   await expectExactSums(USER_C.username, {
     collaborators: 1,
-    valueToOthersUsd: 30_000,
-    valueToSelfUsd: 40_000,
+    valueToOthersUsd: 15_000,
+    valueToSelfUsd: 20_000,
   });
   await expectExactSums(USER_D.username, {
     collaborators: 0,
     valueToOthersUsd: 0,
-    valueToSelfUsd: 30_000,
+    valueToSelfUsd: 15_000,
   });
   await signOut(page);
 });
@@ -620,45 +699,46 @@ test("04 E confirms; deal co-attested; leaderboard exact and rounded; sorting by
   await shot(page, "deal1-co-attested");
 
   await page.goto("/leaderboard");
+  // Co-attested (no hashes yet): every counted dollar is weighted 0.5.
   await expectBoardRow(page, USER_C.username, {
     collaborators: "2",
-    toOthers: "$50k",
-    toSelf: "$40k",
+    toOthers: "$30k",
+    toSelf: "$20k",
     evidence: "0",
   });
   await expectBoardRow(page, USER_D.username, {
     collaborators: "0",
     toOthers: "<$10k",
-    toSelf: "$30k",
+    toSelf: "$20k",
     evidence: "0",
   });
   await expectBoardRow(page, USER_E.username, {
     collaborators: "0",
     toOthers: "<$10k",
-    toSelf: "$20k",
+    toSelf: "$10k",
     evidence: "0",
   });
   await shot(page, "leaderboard-after-e-confirms");
 
   await expectExactSums(USER_C.username, {
     collaborators: 2,
-    valueToOthersUsd: 50_000,
-    valueToSelfUsd: 40_000,
+    valueToOthersUsd: 25_000,
+    valueToSelfUsd: 20_000,
   });
   await expectExactSums(USER_D.username, {
     collaborators: 0,
     valueToOthersUsd: 0,
-    valueToSelfUsd: 30_000,
+    valueToSelfUsd: 15_000,
   });
   await expectExactSums(USER_E.username, {
     collaborators: 0,
     valueToOthersUsd: 0,
-    valueToSelfUsd: 20_000,
+    valueToSelfUsd: 10_000,
   });
 
   // Sorting: the on-page order under every column must match the order the
   // independent math predicts (metric desc, earliest confirmation, name).
-  const metrics = computeExpectedBoard(await fetchParticipantRows());
+  const metrics = await computeExpectedBoard(await fetchParticipantRows());
   expect(await pageBoardOrder(page)).toEqual(expectedOrder(metrics, "collaborators"));
 
   await page.getByRole("button", { name: /To others/ }).click();
@@ -778,12 +858,13 @@ test("06 decline path: D reports naming C and E; C declines, E confirms; only E'
   ).toBeVisible();
   await shot(page, "deal2-e-confirmed-c-declined");
 
-  // D credits 1 collaborator (E) and only E's $10k; C's figures unchanged.
+  // D credits 1 collaborator (E) and only E's $10k, co-attested-weighted to $5k;
+  // C's evidence-committed figures (full weight) are unchanged.
   await page.goto("/leaderboard");
   await expectBoardRow(page, USER_D.username, {
     collaborators: "1",
-    toOthers: "$10k",
-    toSelf: "$50k",
+    toOthers: "<$10k",
+    toSelf: "$40k",
     evidence: "1",
   });
   await expectBoardRow(page, USER_C.username, {
@@ -802,8 +883,8 @@ test("06 decline path: D reports naming C and E; C declines, E confirms; only E'
 
   await expectExactSums(USER_D.username, {
     collaborators: 1,
-    valueToOthersUsd: 10_000,
-    valueToSelfUsd: 50_000,
+    valueToOthersUsd: 5_000,
+    valueToSelfUsd: 40_000,
   });
   await expectExactSums(USER_C.username, {
     collaborators: 2,
@@ -813,7 +894,7 @@ test("06 decline path: D reports naming C and E; C declines, E confirms; only E'
   await expectExactSums(USER_E.username, {
     collaborators: 0,
     valueToOthersUsd: 0,
-    valueToSelfUsd: 30_000,
+    valueToSelfUsd: 25_000,
   });
   await signOut(page);
 });
@@ -846,8 +927,8 @@ test("07 a $10k solo deal by C earns nothing ranked; it surfaces only as claimed
   // Nobody else moved, and nobody with only solo claims is ranked.
   await expectBoardRow(page, USER_D.username, {
     collaborators: "1",
-    toOthers: "$10k",
-    toSelf: "$50k",
+    toOthers: "<$10k",
+    toSelf: "$40k",
     evidence: "1",
   });
   await expectBoardRow(page, USER_E.username, {
