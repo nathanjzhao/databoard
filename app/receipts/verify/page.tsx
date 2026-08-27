@@ -50,11 +50,12 @@ export default async function VerifyReceiptPage({
       <div className="mt-10 border-t border-rule pt-6">
         <div className="bt-label">What a valid result means</div>
         <p className="mt-2 max-w-[64ch] text-[0.8125rem] leading-relaxed text-ink-faint">
-          Receipts are signed with a shared secret the platform holds, not a
-          public key, so the platform can forge its own. A valid receipt proves
-          DataBoard vouches the deal was recorded here, at the tier and bucket
-          shown, between the handles shown. It is the same operator-attested
-          trust tier as the rest of the board, stated in full on{" "}
+          A receipt carries two layers. The platform MAC alone proves DataBoard
+          vouches the deal was recorded here, at the tier and bucket shown,
+          between the handles shown. The party signatures, checked in your
+          browser above, are stronger: a co-attested receipt signed by every
+          party cannot be forged without their keys, which the platform does not
+          hold. Both, and their residual, are stated in full on{" "}
           <Link
             href="/transparency/verification#receipts"
             className="text-blue hover:text-amber"

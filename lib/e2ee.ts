@@ -51,7 +51,7 @@
  *     tampering detectable, not impossible.
  */
 
-import { x25519 } from "@noble/curves/ed25519.js";
+import { x25519, ed25519 } from "@noble/curves/ed25519.js";
 import { scryptAsync } from "@noble/hashes/scrypt.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -61,6 +61,16 @@ import { sha256 } from "@noble/hashes/sha2.js";
 export const E2EE_VERSION = "e2ee-v1";
 
 const IDENTITY_SALT_PREFIX = "databoard-e2ee-v1:";
+/**
+ * HKDF domain that splits the Ed25519 SIGNING key off the same scrypt seed as
+ * the X25519 encryption key. A distinct info domain from the wrap key below, so
+ * the signing public key is unrelated to the encryption public key even though
+ * both come from one scrypt. This derivation is SHARED with lib/exchange.ts
+ * (which imports the seed path from here); the two must agree byte-for-byte,
+ * because both register into the one user_signing_keys row and verify against
+ * it. Keep this constant identical there.
+ */
+const SIGNING_HKDF_DOMAIN = "databoard-e2ee-v1/sign";
 const WRAP_HKDF_SALT = "databoard-e2ee-v1/wrap";
 const KEY_AAD_PREFIX = "databoard-e2ee-v1/key/";
 const MSG_AAD_PREFIX = "databoard-e2ee-v1/msg/";
@@ -236,6 +246,48 @@ export async function deriveIdentityKeys(
   // getPublicKey clamps the scalar per RFC 7748 before the base point mult.
   const publicKey = x25519.getPublicKey(seed);
   return { publicKey: toB64url(publicKey), secretKey: seed };
+}
+
+/* --------------------------------------------------------- signing keys */
+
+export type SigningKeys = {
+  /** base64url Ed25519 public key (43 chars): registered like the e2ee pubkey. */
+  publicKey: string;
+  /** Raw 32-byte Ed25519 seed: stays in this device's memory or sessionStorage. */
+  secretKey: Uint8Array;
+};
+
+/**
+ * The account's Ed25519 signing keypair, sibling of deriveIdentityKeys above.
+ * Same password + username = the same keypair on any device, forever, which is
+ * the only property an account with no password change and no recovery can
+ * honestly offer. It REUSES the e2ee scrypt seed and splits an Ed25519 key off
+ * it with HKDF-SHA256 under SIGNING_HKDF_DOMAIN, so the one expensive scrypt
+ * serves both keys and the signing public key is still unrelated to the
+ * encryption public key. This derivation is SHARED with lib/exchange.ts and
+ * must stay byte-identical there: both register into the one user_signing_keys
+ * row and verify against it.
+ *
+ * The signature use is public-key, not shared-secret: a receipt or an exchange
+ * step signed with this key proves the NAMED PARTY attested, a thing the
+ * platform (holding no private key) cannot forge.
+ */
+export async function deriveSigningKeys(
+  username: string,
+  password: string,
+): Promise<SigningKeys> {
+  const { secretKey: seed } = await deriveIdentityKeys(username, password);
+  return signingKeysFromSeed(seed, username);
+}
+
+/**
+ * The signing keypair from an already-computed e2ee seed. Callers that already
+ * hold the unlocked e2ee secret key (the login form, the keystore) use this to
+ * avoid a second scrypt; the standalone path above computes the seed first.
+ */
+export function signingKeysFromSeed(seed: Uint8Array, username: string): SigningKeys {
+  const signingSeed = hkdf(sha256, seed, utf8(SIGNING_HKDF_DOMAIN), utf8(username), 32);
+  return { publicKey: toB64url(ed25519.getPublicKey(signingSeed)), secretKey: signingSeed };
 }
 
 /* ------------------------------------------------------------ thread keys */

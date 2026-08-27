@@ -14,7 +14,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { INDEPENDENT_AFFILIATION } from "@/lib/taxonomy";
-import { deriveIdentityKeys } from "@/lib/e2ee";
+import { deriveIdentityKeys, signingKeysFromSeed } from "@/lib/e2ee";
 import { saveKeys } from "@/components/messages/keystore";
 
 type Step = "identity" | "code" | "credentials" | "done";
@@ -114,21 +114,39 @@ export function SignupFlow() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Signup failed.");
       setFinalUsername(data.username);
-      // End-to-end encryption setup, before the password leaves memory: the
-      // browser derives an X25519 keypair from it (lib/e2ee.ts), registers
-      // the PUBLIC half, and keeps the private half in sessionStorage for
-      // this tab. The password and the private key are never sent.
+      // Key setup, before the password leaves memory: the browser derives an
+      // X25519 ENCRYPTION keypair and an Ed25519 SIGNING keypair from it
+      // (lib/e2ee.ts), registers the PUBLIC halves, and keeps the private
+      // halves in sessionStorage for this tab. The password and the private
+      // keys are never sent.
       try {
-        const keys = await deriveIdentityKeys(String(data.username), password);
+        const username = String(data.username);
+        const keys = await deriveIdentityKeys(username, password);
         await fetch("/api/e2ee/pubkey", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ pubkey: keys.publicKey }),
         });
+        let signingPublicKey: string | undefined;
+        let signingSecretKey: Uint8Array | undefined;
+        try {
+          const signing = signingKeysFromSeed(keys.secretKey, username);
+          await fetch("/api/signing/pubkey", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ pubkey: signing.publicKey }),
+          });
+          signingPublicKey = signing.publicKey;
+          signingSecretKey = signing.secretKey;
+        } catch {
+          // Signing key registers on the next login; signup itself stands.
+        }
         saveKeys({
-          username: String(data.username),
+          username,
           publicKey: keys.publicKey,
           secretKey: keys.secretKey,
+          signingPublicKey,
+          signingSecretKey,
         });
       } catch {
         // Registration retries on the next login; signup itself stands.

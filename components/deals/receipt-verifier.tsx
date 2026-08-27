@@ -12,6 +12,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReceiptPayload } from "@/lib/receipts";
 import { verifyInclusionHex, verifySth, type Sth } from "@/lib/merkle";
+import {
+  partySigningBase,
+  verifyPartySig,
+  type PartyBaseFields,
+} from "@/lib/receipt-attest";
 
 type Outcome =
   | { kind: "idle" }
@@ -152,11 +157,16 @@ function ValidCard({ receipt }: { receipt: ReceiptPayload }) {
           {receipt.commit ? receipt.commit.slice(0, 12) : "not stamped"}
         </Row>
       </dl>
+      {receipt.attest && receipt.log ? (
+        <PartyAttestation receipt={receipt} />
+      ) : null}
       {receipt.log ? <LogInclusion log={receipt.log} /> : null}
       <p className="border-t border-rule px-5 py-3 text-[0.6875rem] leading-relaxed text-ink-faint">
-        Valid means DataBoard signed this and nothing in it was altered. It does
-        not, on its own, prove who paid or that the platform did not mint it:
-        the signing key is the platform&apos;s.{" "}
+        Valid means DataBoard signed this and nothing in it was altered. On its
+        own the platform MAC does not prove who paid or that the platform did
+        not mint it, because that key is the platform&apos;s; the party
+        signatures above, when present and complete, are what remove that
+        (co-attested deals cannot be forged without the parties&apos; keys).{" "}
         <a
           href="/transparency/verification#receipts"
           className="text-blue hover:text-amber"
@@ -165,6 +175,152 @@ function ValidCard({ receipt }: { receipt: ReceiptPayload }) {
         </a>
         .
       </p>
+    </div>
+  );
+}
+
+/** The party base fields, reconstructed from a receipt token in the browser. */
+function baseFieldsFromReceipt(receipt: ReceiptPayload): PartyBaseFields | null {
+  if (!receipt.log || !receipt.attest) return null;
+  return {
+    dealId: receipt.dealId,
+    tier: receipt.tier,
+    buyerToken: receipt.buyerToken,
+    amountBucket: receipt.amountBucket,
+    attestedAt: receipt.attestedAt,
+    seq: receipt.log.seq,
+    signers: receipt.attest.signers,
+  };
+}
+
+type SignerRow = {
+  handle: string;
+  /** The signature over the base verifies against the pubkey in the receipt. */
+  sigValid: boolean;
+  /** Directory check: absent = pending, true = matches, false = mismatch/absent. */
+  keyMatches: boolean | null;
+};
+
+/**
+ * Party-signature verification, done entirely in the browser. Two independent
+ * checks per signer: (1) the Ed25519 signature verifies over the recomputed
+ * canonical receipt bytes against the pubkey the receipt carries, and (2) that
+ * pubkey is the one the public directory (/api/signing/pubkey) serves for the
+ * handle. The second closes the loop the operator would otherwise sit inside:
+ * without it, a forged receipt could carry a made-up key it also signed with.
+ * Honest residual, stated on /transparency: the directory is operator-served,
+ * so this is trust-on-first-use, not key transparency.
+ */
+function PartyAttestation({ receipt }: { receipt: ReceiptPayload }) {
+  const [rows, setRows] = useState<SignerRow[] | null>(null);
+
+  const fields = baseFieldsFromReceipt(receipt);
+  const attest = receipt.attest;
+
+  useEffect(() => {
+    if (!fields || !attest) return;
+    let live = true;
+    const base = partySigningBase(fields);
+    const sigByHandle = new Map(attest.sigs.map((s) => [s.handle, s.sig]));
+
+    // Signature math is synchronous; compute it immediately, then fill in the
+    // directory match as the lookups return.
+    const initial: SignerRow[] = fields.signers.map((s) => {
+      const sig = sigByHandle.get(s.handle);
+      return {
+        handle: s.handle,
+        sigValid: sig ? verifyPartySig(base, s.pubkey, sig) : false,
+        keyMatches: null,
+      };
+    });
+    setRows(initial);
+
+    (async () => {
+      const resolved = await Promise.all(
+        fields.signers.map(async (s) => {
+          try {
+            const res = await fetch(
+              `/api/signing/pubkey?handle=${encodeURIComponent(s.handle)}`,
+            );
+            if (!res.ok) return { handle: s.handle, keyMatches: false };
+            const data = (await res.json()) as { pubkey?: string | null };
+            return { handle: s.handle, keyMatches: data.pubkey === s.pubkey };
+          } catch {
+            return { handle: s.handle, keyMatches: false };
+          }
+        }),
+      );
+      if (!live) return;
+      const matchByHandle = new Map(resolved.map((r) => [r.handle, r.keyMatches]));
+      setRows(
+        initial.map((r) => ({ ...r, keyMatches: matchByHandle.get(r.handle) ?? false })),
+      );
+    })();
+
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [receipt]);
+
+  if (!fields || !attest) return null;
+
+  const total = fields.signers.length;
+  const signed = (rows ?? []).filter((r) => r.sigValid).length;
+  const allSigned = total > 0 && signed === total;
+  const allMatch =
+    rows != null && rows.length > 0 && rows.every((r) => r.keyMatches === true);
+
+  return (
+    <div className="border-t border-rule px-5 py-3.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <div className="bt-label">Party signatures</div>
+        <span className="font-mono text-[0.6875rem] text-ink-faint">
+          {signed} of {total} signed
+        </span>
+      </div>
+      <p className="mt-1.5 text-[0.75rem] leading-relaxed text-ink-dim">
+        {allSigned ? (
+          <>
+            <span className="text-green">✓</span> Every named party signed this
+            receipt with their own key, verified in your browser.
+            {allMatch ? " Each key matches the board's directory for its handle." : ""}
+          </>
+        ) : (
+          <>
+            {signed > 0
+              ? "Some parties have signed; the rest have not yet."
+              : "No party has signed this receipt yet; it stands on the platform MAC alone."}
+          </>
+        )}
+      </p>
+      <ul className="mt-2.5 divide-y divide-rule border-t border-rule">
+        {(rows ?? fields.signers.map((s) => ({ handle: s.handle, sigValid: false, keyMatches: null as boolean | null }))).map((r) => (
+          <li key={r.handle} className="flex items-center justify-between gap-4 py-1.5">
+            <span className="font-mono text-[0.75rem] text-ink">@{r.handle}</span>
+            <span className="flex items-center gap-3 font-mono text-[0.625rem] uppercase tracking-[0.1em]">
+              <span className={r.sigValid ? "text-green" : "text-red"}>
+                {r.sigValid ? "sig ok" : "no sig"}
+              </span>
+              <span
+                className={
+                  r.keyMatches === null
+                    ? "text-ink-faint"
+                    : r.keyMatches
+                      ? "text-green"
+                      : "text-red"
+                }
+              >
+                {r.keyMatches === null
+                  ? "key…"
+                  : r.keyMatches
+                    ? "key ok"
+                    : "key ?"}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }

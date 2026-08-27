@@ -2,17 +2,18 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { deriveIdentityKeys } from "@/lib/e2ee";
+import { deriveIdentityKeys, signingKeysFromSeed } from "@/lib/e2ee";
 import { saveKeys } from "@/components/messages/keystore";
 
 /**
- * After the server accepts the password, the browser re-derives the E2EE
- * keypair from it (lib/e2ee.ts) and keeps the private half in
- * sessionStorage for this tab; nothing derived here is ever sent. Accounts
- * from before end-to-end encryption get their PUBLIC key registered on this
- * login, which is what upgrades their future threads to encrypted. The
- * registration is write-once server-side, so a differing stored key is
- * never overwritten; threads will say so loudly instead.
+ * After the server accepts the password, the browser re-derives BOTH the E2EE
+ * (X25519) and the SIGNING (Ed25519) keypair from it (lib/e2ee.ts) and keeps
+ * the private halves in sessionStorage for this tab; nothing derived here is
+ * ever sent. Accounts from before either key get their PUBLIC halves
+ * registered on this login: the e2ee key upgrades future threads to
+ * encrypted, the signing key lets the account party-sign receipts and exchange
+ * steps. Both registrations are write-once server-side, so a differing stored
+ * key is never overwritten; the client flags a mismatch instead.
  */
 async function establishEncryptionKeys(username: string, password: string) {
   try {
@@ -23,7 +24,32 @@ async function establishEncryptionKeys(username: string, password: string) {
       body: JSON.stringify({ pubkey: keys.publicKey }),
     });
     const data = (await res.json().catch(() => ({}))) as { pubkey?: string };
-    saveKeys({ username, publicKey: keys.publicKey, secretKey: keys.secretKey });
+
+    // The signing key, registered the same way. Split off the e2ee seed we just
+    // computed (no second scrypt), and done after the e2ee key is settled so it
+    // never delays the encryption-key registration the rest of the app awaits.
+    let signingPublicKey: string | undefined;
+    let signingSecretKey: Uint8Array | undefined;
+    try {
+      const signing = signingKeysFromSeed(keys.secretKey, username);
+      await fetch("/api/signing/pubkey", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ pubkey: signing.publicKey }),
+      });
+      signingPublicKey = signing.publicKey;
+      signingSecretKey = signing.secretKey;
+    } catch {
+      // Signing re-derives on demand where it is needed; login stands.
+    }
+
+    saveKeys({
+      username,
+      publicKey: keys.publicKey,
+      secretKey: keys.secretKey,
+      signingPublicKey,
+      signingSecretKey,
+    });
     if (res.ok && data.pubkey && data.pubkey !== keys.publicKey) {
       console.warn(
         "e2ee: the registered public key differs from the derived one; encrypted threads will flag this",

@@ -358,18 +358,53 @@ export default function VerificationPage() {
           lede="A co-attested-or-better deal can mint a compact, platform-signed token that binds its tier, its confirmed handles, the blinded buyer, and the amount rounded to a $10k bucket, never the exact figure. It is a two-sided engagement certificate: every confirmed party gets the same token, to show a future counterparty as a track record, and anyone can paste it into /receipts/verify and confirm it is genuine and unaltered, no account needed. A claimed or solo deal mints nothing, so a unilateral claim is worth nothing here too."
         >
           <p className="max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
-            The signature is a shared-secret MAC, HMAC(SERVER_PEPPER, canonical
-            receipt), not a public-key signature. Read that as the limit it is:
-            the platform holds the key, so the platform can forge its own
-            receipts. A verifying receipt therefore proves &quot;DataBoard
-            vouches this deal was recorded here&quot;, at the tier and bucket
-            shown, between the handles shown, and nothing stronger. It does not
-            prove who paid, that the amount is real, or that the platform did not
-            mint it. That is the same operator-attested trust tier as the rest of
-            this surface, and it upgrades along the same path: the attested
-            verifier in section 08 would emit exactly this kind of minimal
-            receipt, but signed inside a measured enclave the operator cannot
-            forge from.
+            The receipt has two signature layers. The first is a shared-secret
+            MAC, HMAC(SERVER_PEPPER, canonical receipt), not a public-key
+            signature: the platform holds that key, so on its own it proves only
+            &quot;DataBoard vouches this deal was recorded here&quot;, at the
+            tier and bucket shown, between the handles shown. The platform could
+            forge that layer alone.
+          </p>
+
+          <div className="mt-5 border-l-2 border-green bg-green-wash px-4 py-3.5">
+            <div className="bt-label text-green">
+              Party signatures: the operator cannot forge a co-attested receipt
+            </div>
+            <p className="mt-2 max-w-[62ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              The second layer is what removes the operator from the loop. Each
+              participant derives an Ed25519 signing key from their password in
+              their own browser (a separate scrypt from the encryption key, same
+              no-recovery derivation), and the public half is registered
+              write-once, exactly like the messaging key. A co-attested deal&apos;s
+              receipt now carries a signature from EACH confirmed participant
+              over the canonical receipt bytes: tier, the participant signing
+              pubkeys, the blinded buyer, the bucketed amount, attested_at, the
+              deal id, and the transparency-log sequence. Because the platform
+              holds no participant private key, it CANNOT forge a fully
+              party-signed receipt: /receipts/verify checks the log inclusion
+              and each party signature in your browser. A valid, fully-signed
+              co-attested receipt proves the named parties themselves attested,
+              not merely that the operator asserts it.
+            </p>
+            <p className="mt-2 max-w-[62ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              The residual, stated plainly: the party keys derive from passwords
+              the client handles, and the verifier confirms each signing key
+              against a directory the operator serves (/api/signing/pubkey), so
+              this is trust-on-first-use against that directory, not key
+              transparency. An operator that front-ran a participant&apos;s first
+              registration could plant a key; the messaging keys carry the same
+              caveat, and the fix is the same, a witness-cosigned key
+              transparency layer, named as future work. The mint path is{" "}
+              <span className="font-mono text-[0.75rem]">lib/receipts.ts</span>{" "}
+              and <span className="font-mono text-[0.75rem]">lib/receipt-attest.ts</span>.
+            </p>
+          </div>
+
+          <p className="mt-4 max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
+            The stronger endgame is still the attested verifier in section 08:
+            it would emit this same minimal receipt, but signed inside a measured
+            enclave the operator cannot forge from, closing the party-key
+            directory gap too.
           </p>
 
           <div className="mt-5 border border-rule bg-panel px-5 py-4">
@@ -377,9 +412,10 @@ export default function VerificationPage() {
             <ul className="mt-2 space-y-1 font-mono text-[0.75rem] leading-relaxed text-ink-dim">
               <li>tier: co-attested or evidence-committed (never claimed)</li>
               <li>participants: every confirmed handle on the deal</li>
+              <li>party signatures: each confirmed participant&apos;s Ed25519 sig + pubkey</li>
               <li>buyer: the same blinded token the board carries</li>
               <li>amount: rounded to the nearest $10k bucket, not the exact total</li>
-              <li>attested_at, deal id, schema hash + commit at signing time</li>
+              <li>attested_at, deal id, translog seq, schema hash + commit at signing time</li>
             </ul>
             <p className="mt-3 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
               Everything in it is metadata already visible to the deal&apos;s own
@@ -455,6 +491,38 @@ export default function VerificationPage() {
             same rail would fund referral payouts at source. It is a blueprint,
             planned and not shipped, and no deal earns this rung until it is.
           </p>
+
+          <div className="mt-5 border border-rule bg-panel px-5 py-4">
+            <div className="bt-label">The dataset half, and its honest limit</div>
+            <p className="mt-2 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Payment is one side of an exchange; the dataset handoff is the
+              other, and that half is built. A co-attested deal can run a
+              commit-encrypt-pay-reveal exchange (
+              <Link href="/deals" className="text-blue hover:text-amber">
+                on the deal page
+              </Link>
+              ): the seller commits to encrypted data and a hash of the key, the
+              buyer verifies the ciphertext and signals payment, the seller
+              reveals the key, the buyer decrypts and verifies, and every step is
+              signed by the party that took it and hash-linked to the last. The
+              server stores commitments, signatures and state only, never the
+              data, the key, or an exact amount.
+            </p>
+            <p className="mt-3 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Read what it is worth honestly. Atomic fair exchange of data for
+              payment between two distrusting parties is impossible without a
+              blockchain or an escrow agent (Pagnia-Gaertner reduces it to
+              consensus). So this bounds and evidences cheating, it does not make
+              the trade atomic: the last mover can still stop, and the payment
+              step is a self-reported commitment, not proof money moved. The full
+              trust ladder, including the on-chain Tier B that would add real
+              atomicity and the Stripe Tier C that would make payment evidence
+              real, is in{" "}
+              <span className="font-mono text-[0.75rem]">docs/EXCHANGE.md</span>.
+              This payment rung is exactly the piece that turns the self-reported
+              payment step into evidence.
+            </p>
+          </div>
 
           <div className="mt-6 border-l-2 border-red bg-red-wash px-4 py-3.5">
             <div className="bt-label text-red">The line we do not cross</div>

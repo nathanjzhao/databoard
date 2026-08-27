@@ -19,7 +19,12 @@
  * password (verified against the registered public key) or signs in again.
  */
 
-import { deriveIdentityKeys, fromB64url, toB64url } from "@/lib/e2ee";
+import {
+  deriveIdentityKeys,
+  signingKeysFromSeed,
+  fromB64url,
+  toB64url,
+} from "@/lib/e2ee";
 
 const STORAGE_KEY = "databoard.e2ee.v1";
 
@@ -27,6 +32,15 @@ export type UnlockedKeys = {
   username: string;
   publicKey: string;
   secretKey: Uint8Array;
+  /**
+   * The account's Ed25519 SIGNING keypair, derived alongside the X25519
+   * encryption pair (lib/e2ee.ts). Optional so an entry written by a tab that
+   * predates signing keys still loads: consumers that need to sign (the deal
+   * page's receipt attestation, the exchange stepper) re-derive from the
+   * password when these are absent. signingPublicKey is base64url.
+   */
+  signingPublicKey?: string;
+  signingSecretKey?: Uint8Array;
 };
 
 function storage(): Storage | null {
@@ -48,11 +62,28 @@ export function loadKeys(username: string): UnlockedKeys | null {
       username?: string;
       publicKey?: string;
       secretKey?: string;
+      signingPublicKey?: string;
+      signingSecretKey?: string;
     };
     if (parsed.username !== username) return null;
     const secretKey = fromB64url(String(parsed.secretKey ?? ""));
     if (!secretKey || secretKey.length !== 32 || !parsed.publicKey) return null;
-    return { username, publicKey: String(parsed.publicKey), secretKey };
+    const signingSecretKey = fromB64url(String(parsed.signingSecretKey ?? ""));
+    const signingOk =
+      typeof parsed.signingPublicKey === "string" &&
+      signingSecretKey &&
+      signingSecretKey.length === 32;
+    return {
+      username,
+      publicKey: String(parsed.publicKey),
+      secretKey,
+      ...(signingOk
+        ? {
+            signingPublicKey: parsed.signingPublicKey,
+            signingSecretKey: signingSecretKey!,
+          }
+        : {}),
+    };
   } catch {
     return null;
   }
@@ -68,6 +99,12 @@ export function saveKeys(keys: UnlockedKeys): void {
         username: keys.username,
         publicKey: keys.publicKey,
         secretKey: toB64url(keys.secretKey),
+        ...(keys.signingPublicKey && keys.signingSecretKey
+          ? {
+              signingPublicKey: keys.signingPublicKey,
+              signingSecretKey: toB64url(keys.signingSecretKey),
+            }
+          : {}),
       }),
     );
   } catch {
@@ -96,11 +133,21 @@ export async function unlockWithPassword(
 ): Promise<UnlockedKeys | null> {
   const derived = await deriveIdentityKeys(username, password);
   if (expectedPubkey && derived.publicKey !== expectedPubkey) return null;
+  // Split the signing pair off the same seed, so a tab unlocked for messages
+  // can also sign a receipt or an exchange step without a second prompt or a
+  // second scrypt. A failure here never blocks the unlock.
   const keys: UnlockedKeys = {
     username,
     publicKey: derived.publicKey,
     secretKey: derived.secretKey,
   };
+  try {
+    const signing = signingKeysFromSeed(derived.secretKey, username);
+    keys.signingPublicKey = signing.publicKey;
+    keys.signingSecretKey = signing.secretKey;
+  } catch {
+    // Messaging still works; signing re-derives on demand where it is needed.
+  }
   saveKeys(keys);
   return keys;
 }

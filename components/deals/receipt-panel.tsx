@@ -119,9 +119,10 @@ export function ReceiptPanel({
       </p>
 
       <p className="mt-3 text-[0.6875rem] leading-relaxed text-ink-faint">
-        The platform holds the signing key, so it can forge its own receipts: a
-        valid receipt proves DataBoard vouches this deal was recorded, not a
-        third-party-unforgeable fact.{" "}
+        The platform MAC alone proves only that DataBoard vouches this deal was
+        recorded. The party signatures below are what remove the operator: a
+        co-attested receipt signed by every party cannot be forged without their
+        keys, which the platform does not hold.{" "}
         <a
           href="/transparency/verification#receipts"
           className="text-blue hover:text-amber"

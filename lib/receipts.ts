@@ -35,6 +35,11 @@ import { hmacHex, safeEqual, sha256Hex } from "./crypto.ts";
 import { readSchemaSql } from "./db.ts";
 import { usdRounded10k } from "../components/deals/format.ts";
 import type { DealDetail, DealTier } from "./deals.ts";
+import {
+  isAttestation,
+  type ReceiptAttestation,
+  type PartyBaseFields,
+} from "./receipt-attest.ts";
 
 /* -------------------------------------------------------------- constants */
 
@@ -91,6 +96,17 @@ export type ReceiptPayload = {
    * present, the signature covers it like every other field.
    */
   log?: ReceiptLog;
+  /**
+   * Party attestations: each confirmed participant's own Ed25519 signature over
+   * the canonical receipt bytes (lib/receipt-attest.ts), plus the signer roster
+   * they sign against. Optional and additive: a receipt with no `attest` is
+   * platform-MAC only, exactly the token this module always produced. When
+   * present, a valid receipt proves the NAMED PARTIES attested, not merely the
+   * operator's MAC. Only ever attached on the log-aware path (it needs the
+   * translog seq the signatures commit to), and the platform MAC covers it like
+   * every other field.
+   */
+  attest?: ReceiptAttestation;
 };
 
 export type VerifyReceiptResult =
@@ -220,7 +236,8 @@ function isValidPayloadShape(v: unknown): v is ReceiptPayload {
     typeof p.attestedAt === "number" &&
     typeof p.schemaSha256 === "string" &&
     (p.commit === null || typeof p.commit === "string") &&
-    isValidLogShape(p.log)
+    isValidLogShape(p.log) &&
+    (p.attest === undefined || isAttestation(p.attest))
   );
 }
 
@@ -260,6 +277,32 @@ export function verifyReceipt(token: string): VerifyReceiptResult {
   const expected = sign(payload);
   if (!safeEqual(expected, parts[2])) return { ok: false, error: "bad_signature" };
   return { ok: true, receipt: payload };
+}
+
+/* ------------------------------------------------------ party base fields */
+
+/**
+ * The fields the party-signature base is built from, pulled out of a receipt
+ * payload. Null when the receipt is not bound to the log (no `seq` for the
+ * signatures to commit to). The roster comes from the payload's own `attest`
+ * block when present, so the same function serves both the signer (who is
+ * handed the roster to sign against) and any verifier (who recomputes the base
+ * from the token alone). Callers that already know the roster can pass their
+ * own; this reads it off the payload.
+ */
+export function partyBaseFieldsFromPayload(
+  payload: ReceiptPayload,
+): PartyBaseFields | null {
+  if (!payload.log) return null;
+  return {
+    dealId: payload.dealId,
+    tier: payload.tier,
+    buyerToken: payload.buyerToken,
+    amountBucket: payload.amountBucket,
+    attestedAt: payload.attestedAt,
+    seq: payload.log.seq,
+    signers: payload.attest?.signers ?? [],
+  };
 }
 
 /* --------------------------------------------- engagement certificate (B)

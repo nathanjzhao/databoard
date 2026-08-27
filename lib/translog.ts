@@ -54,6 +54,7 @@ import {
   encodeReceipt,
   type ReceiptPayload,
 } from "./receipts.ts";
+import { attestationForDeal } from "./party-sigs.ts";
 import type { DealDetail } from "./deals.ts";
 
 /* --------------------------------------------------------------- log key */
@@ -372,6 +373,12 @@ export async function consistencyProofBetween(
  * the same tier and attestation reuse one leaf, so the token is stable across
  * renders. Falls back to an unlogged receipt if the log is unreachable, so the
  * deal page never breaks. Null when the deal does not mint (claimed / solo).
+ *
+ * The token also carries the PARTY-SIGNATURE block (lib/party-sigs.ts): the
+ * roster of confirmed participants who hold a signing key, and each signature
+ * collected so far, bound to the `seq` of this receipt state. That is what
+ * makes a co-attested receipt unforgeable by the operator, who holds no party
+ * key. Attaching it needs the seq, so it rides the log-aware path only.
  */
 export async function loggedReceiptForDeal(
   deal: DealDetail,
@@ -388,7 +395,12 @@ export async function loggedReceiptForDeal(
       },
       { dedupKey: `receipt_minted:${deal.id}:${payload.tier}:${payload.attestedAt}` },
     );
-    const full: ReceiptPayload = { ...payload, log: { seq, leafHash } };
+    const attest = await attestationForDeal(deal, seq);
+    const full: ReceiptPayload = {
+      ...payload,
+      log: { seq, leafHash },
+      ...(attest ? { attest } : {}),
+    };
     return { token: encodeReceipt(full), payload: full };
   } catch (err) {
     console.error("translog: loggedReceiptForDeal fell back to unlogged:", err);
