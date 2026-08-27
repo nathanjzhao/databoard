@@ -42,6 +42,11 @@ const PUBLIC_PATHS = new Set([
 const PUBLIC_PREFIXES = [
   "/api/auth/",
   "/api/transparency/",
+  // The transparency log and its proof endpoints are public for the same
+  // reason /transparency is: a tamper-evident ledger is worth nothing if you
+  // need an account to read the heads and check the proofs. /transparency/log
+  // is covered by the "/transparency/" prefix below; the API lives here.
+  "/api/translog/",
   "/transparency/",
   "/api/cron/",
 ];

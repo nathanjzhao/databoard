@@ -490,6 +490,34 @@ BEGIN
 END;
 
 -- ---------------------------------------------------------------------------
+-- deal_close_dates
+--
+-- An optional, reporter-stated close date for a deal, recorded once when the
+-- deal is filed. It exists for exactly one mechanism: the timely-recording
+-- fee credit (lib/referrals.ts). A confirmed share on a deal whose stated
+-- close date is within a short window of when the deal was actually recorded
+-- (and whose earner committed evidence on their own row) owes a documented,
+-- capped percentage LESS referral up its chain. The carrot makes prompt,
+-- evidenced recording cheaper than late or none.
+--
+-- It is a NEW TABLE, not a column on deals, because this schema is applied
+-- CREATE ... IF NOT EXISTS only: a column added to a table that predates it
+-- would silently not exist on older databases. Deals filed without a stated
+-- close date simply have no row here and earn no credit, so the table is
+-- purely additive and every pre-existing accrual is unchanged.
+--
+-- No PII here: a foreign key and two timestamps. stated_close_at is a date
+-- the reporter typed (day granularity, in ms); recorded_at mirrors the deal's
+-- created_at so the credit rule reads one self-contained row. Neither is a
+-- dollar figure, a name, or a buyer.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS deal_close_dates (
+  deal_id         TEXT    PRIMARY KEY REFERENCES deals(id) ON DELETE CASCADE,
+  stated_close_at INTEGER NOT NULL,
+  recorded_at     INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- ops_errors
 --
 -- Server errors, captured by the Next instrumentation hook (instrumentation.ts
@@ -696,5 +724,79 @@ CREATE TABLE IF NOT EXISTS referral_dispute_status (
                 CHECK (status IN ('open', 'upheld', 'rejected')),
   resolved_at INTEGER,
   resolved_by TEXT    REFERENCES users(id)
+);
+
+-- ---------------------------------------------------------------------------
+-- translog_leaves  (append-only Merkle transparency log, RFC 6962)
+--
+-- One row per consequential, NON-PII event: a deal recorded, a participant
+-- confirming, a deal reaching a tier, a receipt minted, a referral settled,
+-- an ask posted or closed, an invite consumed. The events are the same ones
+-- the rest of the board already exposes to the parties involved; this table
+-- makes the SEQUENCE of them tamper-evident.
+--
+-- payload_json is the CANONICAL JSON of the leaf, and it is the whole point
+-- of this table that it holds no PII and no raw figures. Every leaf is
+--   { seq, type, ts, subject, ...bucketed fields }
+-- where `subject` is HMAC(SERVER_PEPPER, "translog-subject" | raw id): a
+-- blinded row id, never a handle, never a buyer name. Dollar amounts appear
+-- only as $10k buckets ("$120k", "<$10k"), never exact. See lib/translog.ts.
+--
+-- leaf_hash is the RFC 6962 leaf hash: SHA-256(0x00 || payload_json bytes),
+-- hex. It is UNIQUE because `seq` is inside the payload, so no two leaves can
+-- collide, and the inclusion-proof endpoint looks a leaf up by this hash.
+--
+-- seq is a contiguous 1..N sequence (the append path always writes
+-- MAX(seq)+1 inside a write transaction), so the tree at size N is exactly
+-- the first N rows ordered by seq. Nothing here is ever updated or deleted.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS translog_leaves (
+  seq          INTEGER PRIMARY KEY AUTOINCREMENT,
+  leaf_hash    TEXT    NOT NULL UNIQUE,
+  payload_json TEXT    NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- translog_heads  (cached Signed Tree Heads)
+--
+-- The Merkle root is a pure function of translog_leaves, so this table is a
+-- CACHE, not a second source of truth: the first time the log is observed at
+-- a given tree_size, the root is computed and an STH is signed and stored
+-- here, and every later observer at that size is handed the identical STH.
+--
+-- signed_head is the canonical STH JSON with its Ed25519 signature:
+--   { v, logId, treeSize, rootHash, timestamp, signature }
+-- signed with a log key derived HKDF-SHA256 from SERVER_PEPPER (label
+-- "databoard-translog-v1"). The PUBLIC key is served at
+-- /api/translog/pubkey and printed on /transparency/log. root_hash is
+-- duplicated out of the JSON for cheap indexing. No PII: a size, two hex
+-- digests, a timestamp, a signature.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS translog_heads (
+  tree_size   INTEGER PRIMARY KEY,
+  root_hash   TEXT    NOT NULL,
+  signed_head TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- translog_events  (append idempotency map)
+--
+-- Some events can be triggered more than once for the same logical fact: a
+-- receipt is "minted" every time a deal page is rendered, a tier is reached
+-- once but the write path may be retried. dedup_key is the logical identity
+-- of the event ("receipt_minted:<dealId>:<tier>:<attestedAt>", etc); the
+-- append path consults it first and reuses the existing leaf instead of
+-- writing a duplicate. It maps a logical event to the leaf that recorded it.
+--
+-- No PII: an opaque event key built from row ids and enum words, plus the
+-- seq and hash of the leaf it points at.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS translog_events (
+  dedup_key  TEXT    PRIMARY KEY,
+  leaf_seq   INTEGER NOT NULL REFERENCES translog_leaves(seq),
+  leaf_hash  TEXT    NOT NULL,
+  created_at INTEGER NOT NULL
 );
 
