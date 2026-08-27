@@ -91,8 +91,24 @@ export default async function LeaderboardPage() {
           </div>
         ))}
       </div>
+      {/* --------------------------------------------- how value is weighted */}
+      <div className="mt-3 border-l-2 border-rule-strong bg-panel px-4 py-3">
+        <div className="bt-label text-ink-faint">How the value columns are weighted</div>
+        <p className="mt-1.5 max-w-[74ch] text-[0.75rem] leading-relaxed text-ink-faint">
+          The two dollar columns are tier-weighted: an evidence-committed dollar
+          counts at 1.0, a co-attested one at 0.5, a solo or unattested claim at
+          0. And a confirmation from a counterparty inside your own invite
+          subtree, or one sharing an invite ancestor within two hops, earns you
+          no brought-in or to-others credit until that account is 14 days old
+          and has co-signed a deal with someone outside your tree. Both are
+          reputation weights only. The referral fee on every one of those
+          dollars is owed in full regardless, so gaming the standings costs
+          exactly what playing it straight does.
+        </p>
+      </div>
       <p className="mt-3 text-[0.75rem] text-ink-faint">
-        The full ladder, and everything it does not prove, is documented on{" "}
+        The full ladder, the weights, and everything none of it proves are
+        documented on{" "}
         <Link
           href="/transparency/verification"
           className="text-blue hover:text-amber"
