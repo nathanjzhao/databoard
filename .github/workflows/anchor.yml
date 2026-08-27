@@ -1,0 +1,62 @@
+name: anchor-translog
+
+# Externally anchor the transparency log's signed tree head by committing it to
+# git history. This is the tamper-evident witness described in
+# docs/transparency-log/README.md: once a head is in public history others have
+# pulled, the operator cannot rewrite the log without it being detectable.
+#
+# It anchors the LIVE deployment over its public API (no database access, no
+# secrets): the head is signed, so witnessing it needs only to fetch and verify
+# it. scripts/anchor-sth.ts verifies the signature before writing anything and
+# refuses to overwrite an existing anchor with a different root.
+
+on:
+  schedule:
+    # Daily. A run with no new leaves is idempotent and commits nothing.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Base URL of the deployment to anchor"
+        required: false
+        default: "https://getdataboard.vercel.app"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: anchor-translog
+  cancel-in-progress: false
+
+jobs:
+  anchor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Anchor the current signed tree head
+        run: node scripts/anchor-sth.ts --url "${URL}"
+        env:
+          URL: ${{ github.event.inputs.url || 'https://getdataboard.vercel.app' }}
+
+      - name: Commit the anchor if it changed
+        run: |
+          if [ -n "$(git status --porcelain docs/transparency-log)" ]; then
+            git config user.name "databoard-anchor"
+            git config user.email "anchor@users.noreply.github.com"
+            git add docs/transparency-log
+            SIZE="$(ls docs/transparency-log/sth-*.json 2>/dev/null | sed -E 's/.*sth-([0-9]+)\.json/\1/' | sort -n | tail -1)"
+            git commit -m "anchor: transparency log signed head at size ${SIZE:-unknown}"
+            git push
+          else
+            echo "No new signed head to anchor."
+          fi
