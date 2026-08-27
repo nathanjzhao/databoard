@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReceiptPayload } from "@/lib/receipts";
+import { verifyInclusionHex, verifySth, type Sth } from "@/lib/merkle";
 
 type Outcome =
   | { kind: "idle" }
@@ -151,6 +152,7 @@ function ValidCard({ receipt }: { receipt: ReceiptPayload }) {
           {receipt.commit ? receipt.commit.slice(0, 12) : "not stamped"}
         </Row>
       </dl>
+      {receipt.log ? <LogInclusion log={receipt.log} /> : null}
       <p className="border-t border-rule px-5 py-3 text-[0.6875rem] leading-relaxed text-ink-faint">
         Valid means DataBoard signed this and nothing in it was altered. It does
         not, on its own, prove who paid or that the platform did not mint it:
@@ -163,6 +165,92 @@ function ValidCard({ receipt }: { receipt: ReceiptPayload }) {
         </a>
         .
       </p>
+    </div>
+  );
+}
+
+type InclusionState =
+  | { kind: "checking" }
+  | { kind: "in"; treeSize: number }
+  | { kind: "out"; reason: string };
+
+/**
+ * When a receipt carries its append-only-log coordinates, go the extra step:
+ * fetch the inclusion proof and the log key, recompute the Merkle root and
+ * check the signed head IN THIS BROWSER, and report that the receipt is in the
+ * public log at a signed tree size, not merely that the operator's MAC held.
+ */
+function LogInclusion({ log }: { log: { seq: number; leafHash: string } }) {
+  const [state, setState] = useState<InclusionState>({ kind: "checking" });
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const [proofRes, keyRes] = await Promise.all([
+          fetch(`/api/translog/proof/inclusion?leaf=${encodeURIComponent(log.leafHash)}`),
+          fetch("/api/translog/pubkey"),
+        ]);
+        if (!proofRes.ok || !keyRes.ok) {
+          if (live) setState({ kind: "out", reason: "the log did not return a proof" });
+          return;
+        }
+        const proof = (await proofRes.json()) as {
+          leafHash: string;
+          leafIndex: number;
+          treeSize: number;
+          auditPath: string[];
+          sth: Sth;
+        };
+        const { publicKey } = (await keyRes.json()) as { publicKey: string };
+        const rootOk = verifyInclusionHex({
+          leafHash: proof.leafHash,
+          leafIndex: proof.leafIndex,
+          treeSize: proof.treeSize,
+          auditPath: proof.auditPath,
+          root: proof.sth.rootHash,
+        });
+        const sigOk = verifySth(proof.sth, publicKey);
+        if (live) {
+          setState(
+            rootOk && sigOk
+              ? { kind: "in", treeSize: proof.treeSize }
+              : { kind: "out", reason: "the proof did not verify against the signed head" },
+          );
+        }
+      } catch {
+        if (live) setState({ kind: "out", reason: "could not reach the log" });
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [log.leafHash]);
+
+  return (
+    <div className="border-t border-rule px-5 py-3">
+      {state.kind === "checking" ? (
+        <p className="text-[0.6875rem] text-ink-faint">Checking the public log…</p>
+      ) : state.kind === "in" ? (
+        <p className="text-[0.75rem] leading-relaxed text-ink-dim">
+          <span className="text-green">✓</span> And it is in the public log at
+          tree size {state.treeSize.toLocaleString("en-US")}: the inclusion
+          proof checks in your browser against the signed head.{" "}
+          <a href="/transparency/log#verify" className="text-blue hover:text-amber">
+            Verify it yourself
+          </a>
+          .
+        </p>
+      ) : (
+        <p className="text-[0.75rem] leading-relaxed text-ink-faint">
+          This receipt carries a log binding, but the inclusion proof could not
+          be confirmed right now ({state.reason}).{" "}
+          <a href="/transparency/log#verify" className="text-blue hover:text-amber">
+            Check on the log page
+          </a>
+          .
+        </p>
+      )}
     </div>
   );
 }

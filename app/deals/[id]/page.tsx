@@ -24,7 +24,11 @@ import { getSessionUser } from "@/lib/auth";
 import { isDbConfigured } from "@/lib/db";
 import { buyerShort } from "@/lib/crypto";
 import { getDealForUser, type DealDetail } from "@/lib/deals";
-import { encodeReceipt, receiptPayloadForDeal } from "@/lib/receipts";
+import {
+  CERTIFICATE_DISPUTE_WINDOW_DAYS,
+  provenanceLine,
+} from "@/lib/receipts";
+import { loggedReceiptForDeal } from "@/lib/translog";
 
 export const metadata: Metadata = { title: "Deal" };
 export const dynamic = "force-dynamic";
@@ -60,9 +64,15 @@ export default async function DealPage({
     (deal.tier === "co_attested" || solo);
 
   // A co-attested-or-better deal mints a portable receipt; a claimed or solo
-  // deal mints nothing, so the affordance simply is not there.
-  const receiptPayload = receiptPayloadForDeal(deal);
-  const receiptToken = receiptPayload ? encodeReceipt(receiptPayload) : null;
+  // deal mints nothing, so the affordance simply is not there. The token is
+  // bound to the append-only log (lib/translog.ts): it carries the seq and
+  // leaf hash of its receipt_minted leaf, so the verifier can prove the
+  // receipt sits in the public log at a signed tree size, not merely that the
+  // operator's MAC is intact. Idempotent, so the token is stable per state;
+  // falls back to an unlogged receipt if the log is unreachable.
+  const logged = await loggedReceiptForDeal(deal);
+  const receiptPayload = logged?.payload ?? null;
+  const receiptToken = logged?.token ?? null;
 
   return (
     <div className="mx-auto w-full max-w-[900px] px-5 py-12">
@@ -144,6 +154,15 @@ export default async function DealPage({
                 buyerShort: buyerShort(deal.buyerToken),
                 buyerIsOther: deal.buyerIsOther,
               }}
+              provenance={provenanceLine({
+                tier: receiptPayload.tier,
+                buyerShort: buyerShort(deal.buyerToken),
+                buyerIsOther: deal.buyerIsOther,
+                amountBucket: receiptPayload.amountBucket,
+                participants: receiptPayload.participants,
+                attestedAt: receiptPayload.attestedAt,
+              })}
+              disputeWindowDays={CERTIFICATE_DISPUTE_WINDOW_DAYS}
             />
           </div>
         </section>

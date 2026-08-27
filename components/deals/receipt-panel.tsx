@@ -32,16 +32,22 @@ const TIER_WORD: Record<ReceiptAttests["tier"], string> = {
 export function ReceiptPanel({
   token,
   attests,
+  provenance,
+  disputeWindowDays,
 }: {
   token: string;
   attests: ReceiptAttests;
+  /** One-line provenance for a future counterparty (lib/receipts provenanceLine). */
+  provenance: string;
+  /** Days either party has to dispute the record on-platform. */
+  disputeWindowDays: number;
 }) {
   const [open, setOpen] = useState(false);
 
   return (
     <div className="border border-rule bg-panel px-5 py-4">
       <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <div className="bt-label">Portable receipt</div>
+        <div className="bt-label">Portable receipt · engagement certificate</div>
         <span className="font-mono text-[0.6875rem] text-ink-faint">
           HMAC-signed, off-platform
         </span>
@@ -50,13 +56,23 @@ export function ReceiptPanel({
       <p className="mt-2 max-w-[64ch] text-[0.8125rem] leading-relaxed text-ink-dim">
         A compact token that binds this deal&apos;s tier, its confirmed handles,
         the blinded buyer, and the amount rounded to a $10k bucket, signed by the
-        platform. Hand it to anyone: they paste it into{" "}
+        platform. Both sides of an attested deal get the same certificate: hand
+        it to a future counterparty as a track record, or paste it into{" "}
         <a href="/receipts/verify" className="text-blue hover:text-amber">
           /receipts/verify
         </a>{" "}
-        and confirm it is genuine and unaltered, no account needed. This is the
-        track record recording buys you.
+        to confirm it is genuine and unaltered, no account needed. A solo,
+        unattested deal mints none, so co-attesting is what makes the record
+        worth carrying.
       </p>
+
+      {/* the provenance line a holder shows a counterparty */}
+      <div className="mt-3.5 border-t border-rule pt-3.5">
+        <div className="bt-label">Provenance</div>
+        <div className="mt-1 break-words font-mono text-[0.75rem] leading-relaxed text-ink">
+          {provenance}
+        </div>
+      </div>
 
       {/* what the token attests, bucketed */}
       <dl className="mt-3.5 grid grid-cols-1 gap-x-8 gap-y-2 border-t border-rule pt-3.5 sm:grid-cols-2">
@@ -93,6 +109,14 @@ export function ReceiptPanel({
           </div>
         </div>
       ) : null}
+
+      <p className="mt-3 text-[0.6875rem] leading-relaxed text-ink-faint">
+        Dispute window: for {disputeWindowDays} days either party can contest
+        this deal&apos;s record on-platform. A certificate is a snapshot of the
+        deal&apos;s state when it was minted; if the deal later changes tier, it
+        mints a different one, so treat a fresh certificate as provisional until
+        the window passes.
+      </p>
 
       <p className="mt-3 text-[0.6875rem] leading-relaxed text-ink-faint">
         The platform holds the signing key, so it can forge its own receipts: a

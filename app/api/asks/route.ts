@@ -33,6 +33,7 @@ import { settlementStanding } from "@/lib/referrals";
 import { DbNotConfiguredError, getDb, now } from "@/lib/db";
 import { newId } from "@/lib/crypto";
 import { isBuyerTokenV2 } from "@/lib/voprf";
+import { appendLeafBestEffort } from "@/lib/translog";
 import { mandateProblem, normalizeMandateHash, type MandateInput } from "@/lib/mandates";
 import { isExclusivity } from "@/lib/terms";
 import { CATEGORIES, MODALITIES, PRICE_BANDS, packTags } from "@/lib/taxonomy";
@@ -219,6 +220,14 @@ export async function POST(request: Request) {
     }
     throw err;
   }
+
+  // Transparency log: an ask posting is a consequential, non-PII event. The
+  // ask committed above; this is a best-effort follow-on that never fails the
+  // post. The leaf carries a blinded ask id and the category, nothing more.
+  await appendLeafBestEffort(
+    { type: "ask_posted", subject: id, category: body.category ?? "" },
+    { dedupKey: `ask_posted:${id}` },
+  );
 
   return NextResponse.json({ id }, { status: 201 });
 }

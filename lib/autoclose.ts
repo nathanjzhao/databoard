@@ -25,6 +25,7 @@
  */
 
 import { getDb, now } from "./db.ts";
+import { appendLeafBestEffort } from "./translog.ts";
 
 /** 7 days without an affirmation and an ask is stale. */
 export const STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
@@ -106,12 +107,21 @@ export async function recordAskClosure(
   reason: ClosureReason,
 ): Promise<void> {
   const db = await getDb();
-  await db.execute({
+  const res = await db.execute({
     sql: `INSERT INTO ask_closures (ask_id, reason, closed_at)
           VALUES (?, ?, ?)
           ON CONFLICT (ask_id) DO NOTHING`,
     args: [askId, reason, now()],
   });
+  // Only the first writer's closure is real (ON CONFLICT DO NOTHING); log the
+  // ask_closed leaf just once, keyed on the ask so the auto and owner paths
+  // never double-log. Best-effort: a log hiccup must not un-close an ask.
+  if (res.rowsAffected > 0) {
+    await appendLeafBestEffort(
+      { type: "ask_closed", subject: askId, reason },
+      { dedupKey: `ask_closed:${askId}` },
+    );
+  }
 }
 
 /**
@@ -180,5 +190,13 @@ export async function runAutoclose(
     },
   ]);
   await db.batch(statements, "write");
+  // Transparency log: one ask_closed leaf per newly-closed ask, keyed on the
+  // ask so a re-run of the sweep never double-logs. Best-effort follow-on.
+  for (const id of askIds) {
+    await appendLeafBestEffort(
+      { type: "ask_closed", subject: id, reason: "auto_stale" },
+      { dedupKey: `ask_closed:${id}` },
+    );
+  }
   return { closed: askIds.length, askIds };
 }

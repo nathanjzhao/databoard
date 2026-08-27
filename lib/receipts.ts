@@ -52,6 +52,16 @@ export type ReceiptTier = "co_attested" | "evidence_committed";
 
 /* ------------------------------------------------------------------ types */
 
+/**
+ * The append-only-log coordinates of a receipt: the sequence number and RFC
+ * 6962 leaf hash of the receipt_minted leaf. Present when the receipt was
+ * minted through the log-aware path (lib/translog.ts), absent otherwise. When
+ * present, a verifier can go on to fetch an inclusion proof and confirm the
+ * receipt sits in the public log at a signed tree size, not merely that the
+ * operator's MAC is intact.
+ */
+export type ReceiptLog = { seq: number; leafHash: string };
+
 /** The signed body of a receipt. Everything here is metadata; nothing is PII. */
 export type ReceiptPayload = {
   /** Format version. */
@@ -74,6 +84,13 @@ export type ReceiptPayload = {
   schemaSha256: string;
   /** Deploy commit the platform ran when it signed, or null off Vercel. Context. */
   commit: string | null;
+  /**
+   * Append-only-log coordinates, when this receipt was minted through the
+   * log-aware path. Optional and additive: a receipt with no `log` is exactly
+   * the token this module always produced, and it still verifies. When
+   * present, the signature covers it like every other field.
+   */
+  log?: ReceiptLog;
 };
 
 export type VerifyReceiptResult =
@@ -202,8 +219,17 @@ function isValidPayloadShape(v: unknown): v is ReceiptPayload {
     typeof p.amountBucket === "string" &&
     typeof p.attestedAt === "number" &&
     typeof p.schemaSha256 === "string" &&
-    (p.commit === null || typeof p.commit === "string")
+    (p.commit === null || typeof p.commit === "string") &&
+    isValidLogShape(p.log)
   );
+}
+
+/** The optional log binding: absent, or { seq:number, leafHash:string }. */
+function isValidLogShape(log: unknown): boolean {
+  if (log === undefined) return true;
+  if (log === null || typeof log !== "object") return false;
+  const l = log as Record<string, unknown>;
+  return typeof l.seq === "number" && typeof l.leafHash === "string";
 }
 
 /**
@@ -234,4 +260,52 @@ export function verifyReceipt(token: string): VerifyReceiptResult {
   const expected = sign(payload);
   if (!safeEqual(expected, parts[2])) return { ok: false, error: "bad_signature" };
   return { ok: true, receipt: payload };
+}
+
+/* --------------------------------------------- engagement certificate (B)
+ *
+ * BUILDER 2 mechanism B, layered on the receipt above rather than a second
+ * artifact. An attested deal's receipt IS the portable engagement certificate,
+ * and it exists for BOTH sides: the deal page renders it to every confirmed
+ * participant, not only the reporter, so each side walks away with the same
+ * signed provenance to show a future counterparty. A solo or claimed deal mints
+ * nothing (receiptPayloadForDeal returns null), so the certificate is strictly
+ * better for an attested deal than a solo one: a unilateral claim is worth
+ * nothing here, exactly as it is worth nothing for reputation and fees.
+ *
+ * These are pure formatting helpers, kept separate from the receipt-signing
+ * functions above (which builder 1 also extends, to carry the transparency-log
+ * seq + leaf hash): a change there does not touch the certificate presentation
+ * here, and vice versa.
+ */
+
+/** Days either party has to dispute an attested deal's record on-platform. */
+export const CERTIFICATE_DISPUTE_WINDOW_DAYS = 30;
+
+/** A date, never a time: yyyy-mm-dd (UTC), revealing no more than the day. */
+export function certificateDate(attestedAt: number): string {
+  return new Date(attestedAt).toISOString().slice(0, 10);
+}
+
+/**
+ * The one-line provenance a holder shows a future counterparty: tier, blinded
+ * buyer, bucketed amount, the confirmed handles, and the date. Every field is
+ * already in the signed receipt; this is only how it reads as a track-record
+ * line. `buyerShort` is the same short blinded form the deal page renders.
+ */
+export function provenanceLine(parts: {
+  tier: ReceiptTier;
+  buyerShort: string;
+  buyerIsOther: boolean;
+  amountBucket: string;
+  participants: string[];
+  attestedAt: number;
+}): string {
+  const tierWord =
+    parts.tier === "evidence_committed" ? "evidence-committed" : "co-attested";
+  const buyer = `Buyer #${parts.buyerShort}${parts.buyerIsOther ? " (off-list)" : ""}`;
+  const who = parts.participants.map((p) => `@${p}`).join(", ");
+  return `${tierWord} · ${buyer} · ${parts.amountBucket} · ${who} · ${certificateDate(
+    parts.attestedAt,
+  )}`;
 }

@@ -29,6 +29,7 @@
 import { getDb, now } from "./db.ts";
 import { newId } from "./crypto.ts";
 import { buyerChip } from "./voprf.ts";
+import { appendLeaf, logDealState } from "./translog.ts";
 
 /* ------------------------------------------------------------- constants */
 
@@ -125,6 +126,13 @@ export type CreateDealInput = {
   myShareUsd: number;
   note: string;
   participants: { username: string; shareUsd: number }[];
+  /**
+   * Optional reporter-stated close date, epoch ms (day granularity from the
+   * form). When present it is written to deal_close_dates and drives the
+   * timely-recording fee credit (lib/referrals.ts). Absent means no row and no
+   * credit, exactly like every deal filed before this field existed.
+   */
+  statedCloseAt?: number | null;
 };
 
 export type CreateDealResult =
@@ -179,6 +187,13 @@ export async function createDeal(
   if (note.length > MAX_DEAL_NOTE_LENGTH) {
     return { ok: false, error: "note_too_long" };
   }
+  // Optional stated close date (feature A). A malformed value is dropped, not
+  // rejected: it is a convenience that earns a fee credit, never a gate on
+  // recording the deal itself.
+  const statedCloseAt =
+    Number.isSafeInteger(input.statedCloseAt) && (input.statedCloseAt as number) > 0
+      ? (input.statedCloseAt as number)
+      : null;
   if (input.participants.length > MAX_DEAL_PARTICIPANTS) {
     return { ok: false, error: "too_many_participants" };
   }
@@ -296,6 +311,15 @@ export async function createDeal(
         t,
       ],
     });
+    // Optional stated close date, in the same transaction as the deal. It is
+    // metadata only (two timestamps) and feeds the timely-recording fee credit.
+    if (statedCloseAt != null) {
+      await tx.execute({
+        sql: `INSERT INTO deal_close_dates (deal_id, stated_close_at, recorded_at)
+              VALUES (?, ?, ?)`,
+        args: [dealId, statedCloseAt, t],
+      });
+    }
     // The reporter's own row: auto-confirmed, because reporting is attesting.
     await tx.execute({
       sql: `INSERT INTO deal_participants
@@ -311,6 +335,19 @@ export async function createDeal(
         args: [dealId, p.id, p.shareUsd],
       });
     }
+    // The deal is a consequential, non-PII event: append it to the
+    // transparency log in the SAME transaction, so a recorded deal and its
+    // leaf commit atomically (lib/translog.ts). Amount is bucketed to $10k
+    // in the leaf, never the exact figure.
+    await appendLeaf(
+      {
+        type: "deal_recorded",
+        subject: dealId,
+        totalUsd: total,
+        parties: 1 + resolved.length,
+      },
+      { executor: tx, dedupKey: `deal_recorded:${dealId}` },
+    );
     await tx.commit();
   } finally {
     tx.close();
@@ -575,6 +612,12 @@ async function actOnOwnShare(
   if (detail && detail.askId && detail.tier !== "claimed") {
     await refreshAskActivity(detail.askId);
   }
+  // Transparency log: record the confirmation, and the tier if it climbed.
+  // Best-effort and idempotent; a declined row logs nothing (it counts
+  // nowhere), so only a confirm carries a participant_confirmed leaf.
+  if (detail && status === "confirmed") {
+    await logDealState(detail, userId);
+  }
   return { ok: true, status, tier: detail?.tier ?? "claimed" };
 }
 
@@ -637,6 +680,9 @@ export async function commitEvidence(
   if (upd.rowsAffected === 0) return { ok: false, error: "already_committed" };
 
   const detail = await getDealForUser(dealId, userId);
+  // An evidence commit can be the write that tips a co-attested deal to
+  // evidence-committed. Log the tier if it climbed (best-effort, idempotent).
+  if (detail) await logDealState(detail);
   return { ok: true, tier: detail?.tier ?? "claimed" };
 }
 
