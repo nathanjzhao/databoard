@@ -417,6 +417,7 @@ test("09 THE PRIVACY CLAIM: no PII string appears in any row of any table", asyn
     "ask_terms",
     "asks",
     "collab_requests",
+    "deal_close_dates",
     "deal_participants",
     "deals",
     "hidden_asks",
@@ -433,6 +434,9 @@ test("09 THE PRIVACY CLAIM: no PII string appears in any row of any table", asyn
     "thread_keys",
     "thread_participants",
     "threads",
+    "translog_events",
+    "translog_heads",
+    "translog_leaves",
     "user_e2ee_keys",
     "users",
   ]);

@@ -737,9 +737,11 @@ test("04 E confirms; deal co-attested; leaderboard exact and rounded; sorting by
   });
 
   // Sorting: the on-page order under every column must match the order the
-  // independent math predicts (metric desc, earliest confirmation, name).
+  // independent math predicts (metric desc, earliest confirmation, name). The
+  // DEFAULT column is now value brought to others (network contribution), so the
+  // initial order matches valueToOthersUsd before any header is clicked.
   const metrics = await computeExpectedBoard(await fetchParticipantRows());
-  expect(await pageBoardOrder(page)).toEqual(expectedOrder(metrics, "collaborators"));
+  expect(await pageBoardOrder(page)).toEqual(expectedOrder(metrics, "valueToOthersUsd"));
 
   await page.getByRole("button", { name: /To others/ }).click();
   await expect
@@ -994,6 +996,7 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     "ask_terms",
     "asks",
     "collab_requests",
+    "deal_close_dates",
     "deal_participants",
     "deals",
     "hidden_asks",
@@ -1010,6 +1013,9 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     "thread_keys",
     "thread_participants",
     "threads",
+    "translog_events",
+    "translog_heads",
+    "translog_leaves",
     "user_e2ee_keys",
     "users",
   ]);

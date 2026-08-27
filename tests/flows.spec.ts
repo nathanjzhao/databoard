@@ -701,6 +701,7 @@ test("10 PRIVACY: no PII string appears in any row of any table, new tables incl
     "ask_terms",
     "asks",
     "collab_requests",
+    "deal_close_dates",
     "deal_participants",
     "deals",
     "hidden_asks",
@@ -717,6 +718,9 @@ test("10 PRIVACY: no PII string appears in any row of any table, new tables incl
     "thread_keys",
     "thread_participants",
     "threads",
+    "translog_events",
+    "translog_heads",
+    "translog_leaves",
     "user_e2ee_keys",
     "users",
   ]);

@@ -53,9 +53,21 @@ import {
   recordedVolumeChip,
   recordedVolumeBucket,
   comparePriority,
+  recorderStanding,
+  TRUSTED_RECORDER_MIN_TIER,
   RECORDED_VOLUME_BUCKETS,
   type PriorityInput,
 } from "../lib/matching";
+import {
+  maxUnusedInvites,
+  MAX_UNUSED_INVITES,
+  MAX_STANDING_INVITE_BONUS,
+} from "../lib/invites";
+import {
+  provenanceLine,
+  certificateDate,
+  CERTIFICATE_DISPUTE_WINDOW_DAYS,
+} from "../lib/receipts";
 import {
   tierValueWeight,
   WEIGHT_CO_ATTESTED,
@@ -68,7 +80,15 @@ import {
   type InviteGraph,
   type IndependenceContext,
 } from "../lib/independence";
-import { earningEventsFor } from "../lib/referrals";
+import {
+  earningEventsFor,
+  computeReferralLedger,
+  recordingCreditBps,
+  netAccrualCents,
+  accrualCents,
+  TIMELY_EVIDENCE_CREDIT_BPS,
+  TIMELY_RECORDING_WINDOW_MS,
+} from "../lib/referrals";
 import type { DealDetail } from "../lib/deals";
 
 const ROOT = path.resolve(__dirname, "..");
@@ -824,3 +844,165 @@ function expectNonIncreasing(xs: number[]) {
     expect(xs[i - 1] >= xs[i], `ranked descending at index ${i}: ${xs[i - 1]} < ${xs[i]}`).toBe(true);
   }
 }
+
+/* =====================================================================
+ * BUILDER 2 mechanisms (A fee credit, B certificate, C standing, D board).
+ * The end-to-end wiring of D is proven in tests/deals.spec.ts (the default
+ * leaderboard column is now value-to-others); B's mint-nothing-for-solo is
+ * proven in A2 above. These add the exact-rule guards for the new levers,
+ * each with a counterfactual the pre-change code would have failed.
+ * ===================================================================== */
+
+test("E1 timely-recording credit fires only on a timely, evidenced deal, and only lowers", () => {
+  const t = 1_700_000_000_000;
+  // No stated close date at all: no credit, whatever the evidence.
+  expect(recordingCreditBps(null, null, true)).toBe(0);
+  expect(recordingCreditBps(t, null, true)).toBe(0);
+  // Timely but no evidence committed by the earner: no credit.
+  expect(recordingCreditBps(t, t, false)).toBe(0);
+  // Timely AND evidenced: the full credit.
+  expect(recordingCreditBps(t, t, true)).toBe(TIMELY_EVIDENCE_CREDIT_BPS);
+  // The window is symmetric and closed at the edge, open just past it.
+  expect(recordingCreditBps(t, t + TIMELY_RECORDING_WINDOW_MS, true)).toBe(
+    TIMELY_EVIDENCE_CREDIT_BPS,
+  );
+  expect(recordingCreditBps(t, t - TIMELY_RECORDING_WINDOW_MS, true)).toBe(
+    TIMELY_EVIDENCE_CREDIT_BPS,
+  );
+  expect(recordingCreditBps(t, t + TIMELY_RECORDING_WINDOW_MS + 1, true)).toBe(0);
+  // A far-future close date cannot buy the credit by recording now.
+  expect(recordingCreditBps(t, t + 400 * 24 * 60 * 60 * 1000, true)).toBe(0);
+
+  // netAccrualCents: zero credit is exactly the gross accrual (the pre-feature
+  // behaviour, which every deal without a close-date row keeps); the full
+  // credit knocks 20% off and never goes below zero.
+  const gross = accrualCents(60_000, 1); // $600 -> 150000c
+  expect(netAccrualCents(60_000, 1, 0)).toBe(gross);
+  expect(netAccrualCents(60_000, 1, TIMELY_EVIDENCE_CREDIT_BPS)).toBe(
+    gross - Math.floor(gross * (TIMELY_EVIDENCE_CREDIT_BPS / 10000)),
+  );
+  expect(netAccrualCents(60_000, 1, TIMELY_EVIDENCE_CREDIT_BPS)).toBeLessThan(gross);
+  expect(netAccrualCents(0, 1, TIMELY_EVIDENCE_CREDIT_BPS)).toBe(0);
+  // COUNTERFACTUAL: a share the pre-feature code charged 150000c is charged
+  // 120000c once it is timely and evidenced. The two are genuinely different.
+  expect(netAccrualCents(60_000, 1, TIMELY_EVIDENCE_CREDIT_BPS)).not.toBe(gross);
+});
+
+test("E2 the credit flows through earningEventsFor and the ledger on a real deal (restored)", async () => {
+  const recId = await userId(REC.handle);
+  const c = db();
+  const createdRs = await c.execute({
+    sql: `SELECT created_at FROM deals WHERE id = ?`,
+    args: [dealMId],
+  });
+  const recordedAt = Number(createdRs.rows[0].created_at);
+  try {
+    // A stated close date equal to the recorded_at is trivially timely.
+    await c.execute({
+      sql: `INSERT INTO deal_close_dates (deal_id, stated_close_at, recorded_at)
+            VALUES (?, ?, ?)`,
+      args: [dealMId, recordedAt, recordedAt],
+    });
+    // Timely, but REC has committed no evidence yet: still no credit.
+    const before = (await earningEventsFor([recId])).get(recId) ?? [];
+    const evBefore = before.find((e) => e.dealId === dealMId);
+    expect(evBefore, "REC has a DEAL_M earning event").toBeTruthy();
+    expect(evBefore!.creditBps).toBe(0);
+
+    // REC commits evidence on their own reporter row -> now timely AND evidenced.
+    await c.execute({
+      sql: `UPDATE deal_participants SET evidence_hash = ?
+             WHERE deal_id = ? AND user_id = ?`,
+      args: ["a".repeat(64), dealMId, recId],
+    });
+    const after = (await earningEventsFor([recId])).get(recId) ?? [];
+    const evAfter = after.find((e) => e.dealId === dealMId);
+    expect(evAfter!.creditBps).toBe(TIMELY_EVIDENCE_CREDIT_BPS);
+    // DEAL_L (no close-date row) is untouched: the credit is per-deal.
+    for (const e of after) {
+      if (e.dealId !== dealMId) expect(e.creditBps).toBe(0);
+    }
+
+    // The ledger charges the net: DEAL_M's depth-1 accrual drops 20% ($60k
+    // share -> 150000c gross -> 30000c credited).
+    const ledger = await computeReferralLedger(recId);
+    const d1 = ledger.upline.find((u) => u.depth === 1);
+    expect(d1, "REC has a depth-1 ancestor").toBeTruthy();
+    expect(d1!.creditedCents).toBe(
+      accrualCents(60_000, 1) - netAccrualCents(60_000, 1, TIMELY_EVIDENCE_CREDIT_BPS),
+    );
+    expect(d1!.creditedCents).toBe(30_000);
+  } finally {
+    // Restore DEAL_M so downstream suites see it exactly as they seeded it.
+    await c.execute({ sql: `DELETE FROM deal_close_dates WHERE deal_id = ?`, args: [dealMId] });
+    await c.execute({
+      sql: `UPDATE deal_participants SET evidence_hash = NULL
+             WHERE deal_id = ? AND user_id = ?`,
+      args: [dealMId, recId],
+    });
+    c.close();
+  }
+});
+
+test("E3 recorder standing tiers gate the badge and grow the invite cap", () => {
+  const BUCKETS = RECORDED_VOLUME_BUCKETS;
+  // Record-empty: tier 0, no chip, not trusted, base invite cap.
+  const empty = recorderStanding(0, 0);
+  expect(empty.tier).toBe(0);
+  expect(empty.chip).toBeNull();
+  expect(empty.trusted).toBe(false);
+  expect(maxUnusedInvites(empty.tier)).toBe(MAX_UNUSED_INVITES);
+
+  // Volume without evidence lifts the tier but not to trusted here.
+  const mid = recorderStanding(BUCKETS[1], 0); // $50k, base bucket 2
+  expect(mid.tier).toBe(2);
+  expect(mid.trusted).toBe(false);
+  expect(maxUnusedInvites(mid.tier)).toBe(MAX_UNUSED_INVITES + 2);
+
+  // Evidence lifts the SAME volume one rung, over the trusted threshold.
+  const evidenced = recorderStanding(BUCKETS[1], 1);
+  expect(evidenced.tier).toBe(3);
+  expect(evidenced.tier).toBeGreaterThanOrEqual(TRUSTED_RECORDER_MIN_TIER);
+  expect(evidenced.trusted).toBe(true);
+  // COUNTERFACTUAL: the same $50k without evidence is NOT trusted; the evidence
+  // is exactly what flips the badge on.
+  expect(recorderStanding(BUCKETS[1], 0).trusted).toBe(false);
+
+  // The invite bonus is capped, and tier 0 never changes the base (so the
+  // invites CAP spec's fresh account still holds exactly 5).
+  expect(maxUnusedInvites(0)).toBe(MAX_UNUSED_INVITES);
+  expect(maxUnusedInvites(99)).toBe(MAX_UNUSED_INVITES + MAX_STANDING_INVITE_BONUS);
+  expect(maxUnusedInvites(1)).toBeGreaterThan(maxUnusedInvites(0));
+});
+
+test("E4 the engagement certificate provenance line reads as a track record, dated, no exact figure", () => {
+  expect(CERTIFICATE_DISPUTE_WINDOW_DAYS).toBeGreaterThan(0);
+  // A date, never a time.
+  expect(certificateDate(Date.UTC(2026, 7, 20, 13, 45))).toBe("2026-08-20");
+
+  const line = provenanceLine({
+    tier: "co_attested",
+    buyerShort: "2cee",
+    buyerIsOther: false,
+    amountBucket: "$120k",
+    participants: ["aa", "bb"],
+    attestedAt: Date.UTC(2026, 7, 20),
+  });
+  expect(line).toContain("co-attested");
+  expect(line).toContain("Buyer #2cee");
+  expect(line).toContain("$120k");
+  expect(line).toContain("@aa, @bb");
+  expect(line).toContain("2026-08-20");
+  // Off-list buyers are marked; the bucket, not any exact figure, is all it carries.
+  const off = provenanceLine({
+    tier: "evidence_committed",
+    buyerShort: "9f0a",
+    buyerIsOther: true,
+    amountBucket: "$1.5M",
+    participants: ["cc"],
+    attestedAt: Date.UTC(2026, 0, 2),
+  });
+  expect(off).toContain("evidence-committed");
+  expect(off).toContain("(off-list)");
+  expect(off).not.toContain("123456");
+});
