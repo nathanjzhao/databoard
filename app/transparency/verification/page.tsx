@@ -355,7 +355,7 @@ export default function VerificationPage() {
           id="receipts"
           num="05"
           title="Portable receipts"
-          lede="A co-attested-or-better deal can mint a compact, platform-signed token that binds its tier, its confirmed handles, the blinded buyer, and the amount rounded to a $10k bucket, never the exact figure. Anyone can paste it into /receipts/verify and confirm it is genuine and unaltered, no account needed. It is the off-platform track record that makes recording a deal worth its fee. A claimed or solo deal mints nothing."
+          lede="A co-attested-or-better deal can mint a compact, platform-signed token that binds its tier, its confirmed handles, the blinded buyer, and the amount rounded to a $10k bucket, never the exact figure. It is a two-sided engagement certificate: every confirmed party gets the same token, to show a future counterparty as a track record, and anyone can paste it into /receipts/verify and confirm it is genuine and unaltered, no account needed. A claimed or solo deal mints nothing, so a unilateral claim is worth nothing here too."
         >
           <p className="max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
             The signature is a shared-secret MAC, HMAC(SERVER_PEPPER, canonical
@@ -402,6 +402,39 @@ export default function VerificationPage() {
               the matching priority in the same act; a unilateral claim buys
               neither. The mint path is{" "}
               <span className="font-mono text-[0.75rem]">lib/receipts.ts</span>.
+            </p>
+          </div>
+
+          <div className="mt-4 border border-rule bg-panel px-5 py-4">
+            <div className="bt-label">Standing benefits, and what they cost</div>
+            <p className="mt-2 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Confirmed, evidenced recorded volume unlocks a compact recorder
+              standing, shown on{" "}
+              <Link href="/invites" className="text-blue hover:text-amber">
+                /invites
+              </Link>
+              : higher matching priority, a larger unused-invite cap (base 5,
+              plus one slot per tier), and a &quot;trusted recorder&quot; badge
+              on the account&apos;s asks at the top tier. The bucket that unlocks
+              a benefit is the exact volume the referral fee already charged, so
+              no standing is free; buying priority means paying. The badge is
+              standing, not verification, and never says &quot;verified&quot;.
+            </p>
+            <p className="mt-3 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              One documented, capped discount runs the other way. Record a deal
+              within two weeks of the close date you state, and commit evidence
+              on your own row, and the referral it owes up every step of your
+              chain drops 20% (
+              <span className="font-mono text-[0.75rem]">
+                TIMELY_EVIDENCE_CREDIT_BPS
+              </span>{" "}
+              in{" "}
+              <span className="font-mono text-[0.75rem]">lib/referrals.ts</span>).
+              It is a carrot for prompt, evidenced recording, never a penalty:
+              it can only lower what is owed, never below zero, and a deal with
+              no stated close date or no evidence earns nothing. So the fee on a
+              qualifying deal is 80% of the usual accrual, stated here rather
+              than pretended to always be the full amount.
             </p>
           </div>
         </TSection>

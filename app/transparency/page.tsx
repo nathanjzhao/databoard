@@ -56,6 +56,7 @@ const CONTENTS = [
   ["03", "attestation", "Stateless verification"],
   ["04", "recovery", "No recovery"],
   ["05", "audit", "Audit it yourself"],
+  ["06", "log", "The append-only log"],
 ] as const;
 
 export default async function TransparencyPage() {
@@ -429,6 +430,41 @@ export default async function TransparencyPage() {
               </Link>
               .
             </p>
+          </TSection>
+
+          <TSection
+            id="log"
+            num="06"
+            title="The ledger is append-only, and proves it"
+            lede="The claims above are about what we store. This one is about what we cannot quietly un-store. Every consequential, non-PII event is a leaf in an append-only Merkle log (RFC 6962, the Certificate Transparency construction), the tree head is signed, and anyone can be handed a proof that a receipt is in the tree and that an older tree is an exact prefix of a newer one."
+          >
+            <div className="border border-rule bg-panel px-5 py-4">
+              <p className="max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
+                The leaves are metadata only: blinded row ids, tiers, and $10k
+                dollar buckets, never a handle, a buyer name, or an exact
+                figure. A deal receipt now carries the sequence and hash of its
+                leaf, so verifying a receipt can go on to prove it sits in the
+                public log at a signed size, not merely that our shared-secret
+                MAC is intact.
+              </p>
+              <p className="mt-3 max-w-[64ch] text-[0.8125rem] leading-relaxed text-ink-faint">
+                Honest boundary, in full on the log page: the signing key is
+                derived from SERVER_PEPPER, so the operator can sign a fork.
+                What the design buys is detectability, not impossibility, a
+                consistency proof plus the head committed to git catches a
+                rewrite of history others have pulled. Independent co-signing
+                witnesses and a TEE-held key are the upgrade, and are named as
+                future work.
+              </p>
+              <p className="mt-4 text-[0.8125rem] leading-relaxed text-ink-dim">
+                <Link href="/transparency/log" className="text-blue hover:text-amber">
+                  Open the transparency log
+                </Link>{" "}
+                for the signed head, the public key, the checkpoint history, and
+                a box that verifies inclusion and append-only-ness in your own
+                browser.
+              </p>
+            </div>
           </TSection>
         </div>
 
