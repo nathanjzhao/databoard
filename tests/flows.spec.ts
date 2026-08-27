@@ -710,6 +710,7 @@ test("10 PRIVACY: no PII string appears in any row of any table, new tables incl
     "operators",
     "ops_errors",
     "rate_limits",
+    "referral_dispute_status",
     "referral_disputes",
     "referral_settlements",
     "sessions",

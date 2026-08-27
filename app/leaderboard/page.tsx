@@ -25,14 +25,16 @@ const TITLE = "The standings.";
 const BLURB =
   "Ranked by who keeps bringing people into deals that both sides signed " +
   "off on. Dollar figures are self-reported, co-attested at best, and " +
-  "rounded before they get anywhere near this page. A claim nobody " +
-  "co-signed is not on the board.";
+  "rounded before they get anywhere near this page. A unilateral claim, one " +
+  "nobody co-signed, is worth nothing here: nothing for reputation, the same " +
+  "as it is worth nothing for referral fees. It shows only under claimed, " +
+  "unranked.";
 
 const RULES: { rule: string; detail: string }[] = [
   {
     rule: "Only mutually confirmed deals count.",
     detail:
-      "A share someone declined, or has not answered, is worth nothing to anybody. Solo entries count only toward their own reporter's self column, at claimed tier.",
+      "A share someone declined, or has not answered, is worth nothing to anybody. A solo deal has no counterparty to sign it, so it earns zero on every ranked column and surfaces only in the unranked claimed figure.",
   },
   {
     rule: "Repeat pairs are rate-limited.",
@@ -109,6 +111,19 @@ export default async function LeaderboardPage() {
           value={String(board.evidenceCommittedDeals)}
         />
         <Tile label="Value on the board" value={board.attributedValue} />
+      </div>
+
+      {/* -------------------------------------------- unattested, unranked */}
+      <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 border-l-2 border-rule-strong bg-panel px-4 py-3">
+        <span className="bt-label text-ink-faint">Claimed (unattested)</span>
+        <span className="font-mono text-[1.0625rem] tabular-nums text-ink-dim">
+          {board.claimedUnattested}
+        </span>
+        <p className="max-w-[62ch] text-[0.75rem] leading-relaxed text-ink-faint">
+          Solo deals, recorded by one account with no counterparty to attest
+          them. Shown for honesty, ranked nowhere: a claim you make about
+          yourself moves neither the standings nor a referral fee.
+        </p>
       </div>
 
       {/* ------------------------------------------------------ the board */}

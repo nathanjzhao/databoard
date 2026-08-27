@@ -282,10 +282,12 @@ type DealSeed = {
 /**
  * Five demo deals, exercising every state the ledger and leaderboard render:
  * one evidence-committed (tier 2), two co-attested (one with a declined
- * share, which counts nowhere), one solo claim, one still pending with a
- * live deal room. Created through the REAL code paths in lib/deals.ts, so
- * the trigger, the tier derivation and the leaderboard read exactly what
- * production writes.
+ * share, which counts nowhere), one solo claim (the unranked claimed-
+ * unattested figure on the leaderboard), one co-attested deal carrying a
+ * counterparty that has sat pending long enough to read as chronic (the
+ * never-confirmed structure signal the upline sees). Created through the
+ * REAL code paths in lib/deals.ts, so the trigger, the tier derivation and
+ * the leaderboard read exactly what production writes.
  */
 const DEALS: DealSeed[] = [
   {
@@ -383,7 +385,12 @@ const DEALS: DealSeed[] = [
       { from: "cold-copy", body: "Deal is up with the split from Tuesday. Answer your own rows, please." },
       { from: "quiet-ledger", body: "Wire landed this morning. Confirmed." },
     ],
-    ageDays: 1,
+    // Old enough that paper-trail's still-pending row reads as a chronically
+    // pending counterparty on cold-copy's deals (past CHRONIC_PENDING_MS, 30d),
+    // so cold-copy carries a live never-confirmed structure signal for its
+    // upline to read. Kept under the 60-day settlement grace so it does not
+    // also gate cold-copy's posting: this is a signal, not a penalty.
+    ageDays: 38,
   },
 ];
 
@@ -445,6 +452,7 @@ async function main() {
 
   // Idempotent: clear all rows (children first), then reinsert.
   for (const table of [
+    "referral_dispute_status",
     "referral_disputes",
     "referral_settlements",
     "invite_edges",

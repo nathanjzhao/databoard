@@ -84,10 +84,16 @@ export function LeaderboardBoard({
               );
             })}
             <th
-              className="bt-label py-2.5 pr-5 text-right font-normal"
+              className="bt-label py-2.5 pr-4 text-right font-normal"
               title="Deals at evidence-committed tier this account is a confirmed party to. Hashes on file, not yet independently verified."
             >
               Evidence
+            </th>
+            <th
+              className="bt-label py-2.5 pr-5 text-right font-normal text-ink-faint"
+              title="Solo, unattested claims: deals with no named counterparty. Worth nothing for reputation or fees, so this column never sorts the board and carries no rank."
+            >
+              Claimed
             </th>
           </tr>
         </thead>
@@ -153,7 +159,7 @@ export function LeaderboardBoard({
                 >
                   {row.valueToSelf}
                 </td>
-                <td className="py-3 pr-5 text-right">
+                <td className="py-3 pr-4 text-right">
                   {row.evidenceCommittedDeals > 0 ? (
                     <span
                       className="inline-block border border-green/50 bg-green-wash px-1.5 py-0.5 font-mono text-[0.625rem] tabular-nums text-green"
@@ -163,6 +169,16 @@ export function LeaderboardBoard({
                     </span>
                   ) : (
                     <span className="font-mono text-[0.75rem] text-ink-ghost">0</span>
+                  )}
+                </td>
+                <td
+                  className="py-3 pr-5 text-right font-mono text-[0.8125rem] tabular-nums text-ink-faint"
+                  title="Solo claims. No rank."
+                >
+                  {row.claimedUnattested ? (
+                    row.claimedUnattested
+                  ) : (
+                    <span className="text-ink-ghost">·</span>
                   )}
                 </td>
               </tr>

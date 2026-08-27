@@ -11,10 +11,12 @@ import type { Metadata } from "next";
 import { notFound, redirect } from "next/navigation";
 import { DbNotConfiguredNotice, PageStub } from "@/components/page-stub";
 import { HiddenList } from "@/components/admin/hidden-list";
+import { DisputesList } from "@/components/admin/disputes-list";
 import { OpsErrorsSlot } from "@/components/admin/ops-errors-slot";
 import { getSessionUser } from "@/lib/auth";
 import { isDbConfigured } from "@/lib/db";
 import { isOperator, listHidden } from "@/lib/moderation";
+import { listOpenDisputes } from "@/lib/referrals";
 
 export const metadata: Metadata = { title: "Admin" };
 export const dynamic = "force-dynamic";
@@ -32,7 +34,7 @@ export default async function AdminPage() {
   if (!user) redirect("/gate");
   if (!(await isOperator(user.id))) notFound();
 
-  const hidden = await listHidden();
+  const [hidden, disputes] = await Promise.all([listHidden(), listOpenDisputes()]);
 
   return (
     <div className="mx-auto w-full max-w-[880px] px-5 py-12">
@@ -49,6 +51,7 @@ export default async function AdminPage() {
 
       <div className="mt-10 space-y-6">
         <HiddenList rows={hidden} />
+        <DisputesList rows={disputes} />
         <OpsErrorsSlot />
       </div>
     </div>

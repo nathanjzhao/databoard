@@ -8,7 +8,9 @@
  * scrape.
  *
  * Reply: { rows, rankedAccounts, coAttestedDeals, evidenceCommittedDeals,
- *          attributedValue }
+ *          attributedValue, claimedUnattested }. claimedUnattested is the
+ *          board-wide solo-claim total, rounded like every other figure and
+ *          ranked nowhere.
  */
 
 import { NextResponse } from "next/server";

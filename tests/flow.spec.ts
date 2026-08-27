@@ -426,6 +426,7 @@ test("09 THE PRIVACY CLAIM: no PII string appears in any row of any table", asyn
     "operators",
     "ops_errors",
     "rate_limits",
+    "referral_dispute_status",
     "referral_disputes",
     "referral_settlements",
     "sessions",

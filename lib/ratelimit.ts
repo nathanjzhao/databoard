@@ -32,6 +32,7 @@
  *   verify-and-signup  10 / 10 min per IP
  *   login              10 /  5 min per handle,   30 /  5 min per IP
  *   voprf evaluate     30 /  1 min per user
+ *   raise dispute      10 / 10 min per user
  */
 
 import type { InStatement } from "@libsql/client";
@@ -62,6 +63,11 @@ export const RATE_LIMITS = {
   loginPerHandle: { scope: "login-handle", limit: 10, windowMs: 5 * 60_000 },
   loginPerIp: { scope: "login-ip", limit: 30, windowMs: 5 * 60_000 },
   voprfPerUser: { scope: "voprf-user", limit: 30, windowMs: 60_000 },
+  // Raising a dispute is a real, mutual, operator-flagged act; a member never
+  // needs to fire many in a burst. This caps a script spraying disputes to
+  // disarm gates faster than an operator can rule, without ever blocking a
+  // person clicking Dispute on a handful of pairs.
+  disputePerUser: { scope: "dispute-user", limit: 10, windowMs: 10 * 60_000 },
 } as const satisfies Record<string, RateLimitRule>;
 
 export type RateLimitDecision =

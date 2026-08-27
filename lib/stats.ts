@@ -18,13 +18,19 @@
  *                   deals they reported. Declined and pending shares are
  *                   worth nothing.
  *
- *   valueToSelf     Own share on deals they reported, counted once at least
- *                   one named participant has confirmed, or immediately for
- *                   solo deals (which stay claimed tier and are labeled as
- *                   such), plus their own CONFIRMED shares on other people's
- *                   deals. The solo case is the single place a unilateral
- *                   claim surfaces, and it only ever inflates its own
- *                   author's self column.
+ *   valueToSelf     Own share on deals they reported, counted ONLY once at
+ *                   least one named participant has confirmed, plus their own
+ *                   CONFIRMED shares on other people's deals. A SOLO deal (no
+ *                   named participants) counts nothing here: a unilateral
+ *                   claim is worth zero for reputation, the same as it is
+ *                   worth zero for fees. This is the symmetry the referral
+ *                   ledger depends on (lib/referrals.ts): the predicate that
+ *                   grants reputation and the one that charges the fee are the
+ *                   same, so no amount of solo recording buys standing.
+ *
+ *   claimedUnattested  A solo reporter's own share, summed separately. It is
+ *                   surfaced, clearly labeled, so the board is honest that the
+ *                   claim exists, but it sorts nothing and carries no rank.
  *
  * Plus a count of deals at evidence-committed tier the account is a
  * confirmed party to, for the badge column.
@@ -59,6 +65,8 @@ export type LeaderboardRow = {
   valueToOthersUsd: number;
   /** Metric (c), exact. Never serialize to a client. */
   valueToSelfUsd: number;
+  /** Solo claims, exact. Unranked; surfaced separately. Never serialize. */
+  claimedUnattestedUsd: number;
   /** Deals at evidence-committed tier this account is a confirmed party to. */
   evidenceCommittedDeals: number;
   /** Earliest confirmation contributing to any metric. Breaks ties. */
@@ -74,6 +82,8 @@ export type LeaderboardStats = {
   evidenceCommittedDeals: number;
   /** Sum of every counted share, exact. Never serialize to a client. */
   attributedUsd: number;
+  /** Board-wide sum of solo claims, exact. Unranked. Never serialize. */
+  claimedUnattestedUsd: number;
 };
 
 /* ------------------------------------------------------------ computation */
@@ -96,6 +106,7 @@ type Acc = {
   pairEvents: Map<string, number[]>;
   valueToOthersUsd: number;
   valueToSelfUsd: number;
+  claimedUnattestedUsd: number;
   evidenceCommittedDeals: number;
   earliestConfirmedAt: number | null;
 };
@@ -172,6 +183,7 @@ export async function computeLeaderboard(): Promise<LeaderboardStats> {
         pairEvents: new Map(),
         valueToOthersUsd: 0,
         valueToSelfUsd: 0,
+        claimedUnattestedUsd: 0,
         evidenceCommittedDeals: 0,
         earliestConfirmedAt: null,
       };
@@ -201,11 +213,12 @@ export async function computeLeaderboard(): Promise<LeaderboardStats> {
       note(rep, p.confirmedAt);
     }
 
-    // (c) reporter's own share: immediately when solo, otherwise only once
-    // somebody has actually co-signed the deal.
+    // (c) reporter's own share: only once somebody has actually co-signed the
+    // deal. A SOLO deal counts nothing toward the ranked self column; its
+    // value goes to the unranked claimed-unattested tally instead, and it does
+    // NOT note() a ranking timestamp, because it sorts nothing (H2).
     if (solo) {
-      rep.valueToSelfUsd += reporter.shareUsd;
-      note(rep, reporter.confirmedAt);
+      rep.claimedUnattestedUsd += reporter.shareUsd;
     } else if (confirmed.length > 0) {
       rep.valueToSelfUsd += reporter.shareUsd;
       note(
@@ -242,19 +255,24 @@ export async function computeLeaderboard(): Promise<LeaderboardStats> {
 
   const rows: LeaderboardRow[] = [];
   let attributedUsd = 0;
+  let claimedUnattestedUsd = 0;
   for (const a of accs.values()) {
     let collaborators = 0;
     for (const events of a.pairEvents.values()) {
       collaborators += cappedEventCount(events);
     }
     attributedUsd += a.valueToSelfUsd;
+    // Board-wide unattested total counts every account's solo claims, whether
+    // or not the account is otherwise ranked: the figure is honest about how
+    // much unilateral claiming exists without ever ranking it.
+    claimedUnattestedUsd += a.claimedUnattestedUsd;
     if (
       collaborators === 0 &&
       a.valueToOthersUsd === 0 &&
       a.valueToSelfUsd === 0 &&
       a.evidenceCommittedDeals === 0
     ) {
-      continue; // nothing counted, nothing ranked
+      continue; // nothing RANKED counted; a solo-only account is not on the board
     }
     rows.push({
       userId: a.userId,
@@ -262,13 +280,20 @@ export async function computeLeaderboard(): Promise<LeaderboardStats> {
       collaborators,
       valueToOthersUsd: a.valueToOthersUsd,
       valueToSelfUsd: a.valueToSelfUsd,
+      claimedUnattestedUsd: a.claimedUnattestedUsd,
       evidenceCommittedDeals: a.evidenceCommittedDeals,
       earliestConfirmedAt: a.earliestConfirmedAt,
     });
   }
 
   rows.sort(compareBy("collaborators"));
-  return { rows, coAttestedDeals, evidenceCommittedDeals, attributedUsd };
+  return {
+    rows,
+    coAttestedDeals,
+    evidenceCommittedDeals,
+    attributedUsd,
+    claimedUnattestedUsd,
+  };
 }
 
 /* ---------------------------------------------------------------- ranking */
@@ -313,6 +338,8 @@ export type PublicLeaderboardRow = {
   collaborators: number;
   valueToOthers: string;
   valueToSelf: string;
+  /** Solo claims, rounded like every other figure. Sorts nothing; no rank. */
+  claimedUnattested: string;
   evidenceCommittedDeals: number;
   ranks: Record<LeaderboardSortKey, number>;
 };
@@ -324,6 +351,8 @@ export type PublicLeaderboard = {
   evidenceCommittedDeals: number;
   /** Sum of every counted share, rounded like every other public figure. */
   attributedValue: string;
+  /** Board-wide solo-claim total, rounded. Unranked; shown separately. */
+  claimedUnattested: string;
 };
 
 export const SORT_KEYS: readonly LeaderboardSortKey[] = [
@@ -348,11 +377,16 @@ export function toPublicLeaderboard(stats: LeaderboardStats): PublicLeaderboard 
     });
   }
 
+  // Zero solo value must read as empty, not "<$10k": usdRounded10k cannot tell
+  // "a small claim" from "no claim", so guard the zero before rounding.
+  const claimStr = (n: number): string => (n > 0 ? usdRounded10k(n) : "");
+
   const rows: PublicLeaderboardRow[] = stats.rows.map((row) => ({
     username: row.username,
     collaborators: row.collaborators,
     valueToOthers: usdRounded10k(row.valueToOthersUsd),
     valueToSelf: usdRounded10k(row.valueToSelfUsd),
+    claimedUnattested: claimStr(row.claimedUnattestedUsd),
     evidenceCommittedDeals: row.evidenceCommittedDeals,
     ranks: ranks.get(row.userId)!,
   }));
@@ -363,5 +397,7 @@ export function toPublicLeaderboard(stats: LeaderboardStats): PublicLeaderboard 
     coAttestedDeals: stats.coAttestedDeals,
     evidenceCommittedDeals: stats.evidenceCommittedDeals,
     attributedValue: usdRounded10k(stats.attributedUsd),
+    claimedUnattested:
+      stats.claimedUnattestedUsd > 0 ? usdRounded10k(stats.claimedUnattestedUsd) : "$0",
   };
 }

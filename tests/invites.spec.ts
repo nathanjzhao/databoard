@@ -598,6 +598,36 @@ test("05 LEDGER: Y's co-attested $40k share accrues 2.5%^depth to X, quiet-ledge
   expect(probeRow(afterSolo, "quiet-ledger", yHandle).accrued).toBe(2500);
   expect(probeRow(afterSolo, "marble-pennant", yHandle).accrued).toBe(63);
 
+  // H1 POISON-PILL GUARD: a never-confirming pending participant must not zero
+  // the accrual, or one sock buys a fee-free deal while the leaderboard still
+  // credits it. Add a share-0 pending sock to Y's co-attested deal, re-probe,
+  // and require X's accrual UNCHANGED; then remove it so the rest of the suite
+  // sees the deal exactly as before. Before the fix (NOT EXISTS pending) this
+  // dropped Y->X to 0; now accrual fires on the confirmed party regardless.
+  await withDb(async (db) => {
+    const sock = await db.execute({
+      sql: `SELECT id FROM users WHERE username = 'cold-copy'`,
+    });
+    await db.execute({
+      sql: `INSERT INTO deal_participants (deal_id, user_id, role, share_usd, status)
+            VALUES (?, ?, 'participant', 0, 'pending')`,
+      args: [yDealId, String(sock.rows[0].id)],
+    });
+  });
+  const withSock = ledgerProbe([xHandle]);
+  expect(
+    probeRow(withSock, xHandle, yHandle).accrued,
+    "a pending sock participant must not zero the confirmed accrual",
+  ).toBe(100000);
+  await withDb(async (db) => {
+    await db.execute({
+      sql: `DELETE FROM deal_participants
+             WHERE deal_id = ?
+               AND user_id = (SELECT id FROM users WHERE username = 'cold-copy')`,
+      args: [yDealId],
+    });
+  });
+
   // X (the payee, against its own interest) records a $600 off-platform
   // settlement on Y's row. NOTE the shipped semantics, stated on the page
   // ("your record is what reduces the debt"): the payee's one-sided record
@@ -827,7 +857,13 @@ test("07 MANIFEST: verify-served-js.sh passes against the live server and fails 
 /* ------------------------------------------------------------- 8 PRIVACY */
 
 test("08 PRIVACY: the invite and referral tables hold tokens and integers, never PII; genealogy reaches no third party's pages", async () => {
-  const tables = ["invites", "invite_edges", "referral_settlements", "referral_disputes"];
+  const tables = [
+    "invites",
+    "invite_edges",
+    "referral_settlements",
+    "referral_disputes",
+    "referral_dispute_status",
+  ];
   const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/;
 
   /** Every offending "table.column=value" across the four tables. */
@@ -899,4 +935,126 @@ test("08 PRIVACY: the invite and referral tables hold tokens and integers, never
   expect(inviteHtml).not.toContain(`@${yHandle}`);
   expect(inviteHtml).not.toContain(`@${gateHandle}`);
   await signOut(page);
+});
+
+/* ------------------------------------------------------ 9 DISPUTE LIFECYCLE */
+
+/**
+ * H5 end to end, against the REAL lib/referrals.ts on a THROWAWAY database, so
+ * the assertion covers the implementation's gate logic without touching the
+ * shared app.db or depending on the seeded accrual figures. Same node-subprocess
+ * ethos as ledgerProbe: the lib does the work; the test reads what it decided.
+ *
+ * The pivotal assertion is `afterExpiry`: once a dispute's 45-day window lapses
+ * the debt REVERTS to gating. The pre-H5 code lifted the gate forever on any
+ * dispute row, so it would report "not behind" here; this is the guard that
+ * fails on the old behaviour on purpose.
+ */
+function disputeLifecycleProbe(): Record<string, unknown> {
+  const script = `
+    (async () => {
+      const os = await import("node:os");
+      const fsp = await import("node:fs");
+      const pathm = await import("node:path");
+      const tmp = pathm.join(os.tmpdir(), "h5-probe-" + Date.now() + "-" + Math.random().toString(36).slice(2) + ".db");
+      for (const s of ["", "-journal", "-wal", "-shm"]) { try { fsp.rmSync(tmp + s); } catch {} }
+      process.env.BLIND_TENDER_DB = "file:" + tmp;
+      delete process.env.TURSO_DATABASE_URL;
+
+      const dbmod = await import("./lib/db.ts");
+      const ref = await import("./lib/referrals.ts");
+      const crypto = await import("./lib/crypto.ts");
+      const db = await dbmod.getDb();
+      const now = dbmod.now;
+      const nid = crypto.newId;
+      const DAY = 24 * 60 * 60 * 1000;
+
+      async function user(name) {
+        const id = nid("usr");
+        await db.execute({ sql: "INSERT INTO users (id, username, password_hash, account_type, contact_blind_index, created_at) VALUES (?, ?, 'x', 'individual', ?, ?)", args: [id, name, "bi_" + name, now()] });
+        return id;
+      }
+      async function edge(child, inviter) {
+        await db.execute({ sql: "INSERT INTO invite_edges (user_id, inviter_id, invite_code, created_at) VALUES (?, ?, ?, ?)", args: [child, inviter, "inv_" + child.slice(0,6), now()] });
+      }
+      async function behind(y) {
+        const s = await ref.settlementStanding(y);
+        return s.behind ? s.pairs.map((p) => p.payeeUsername).sort() : false;
+      }
+      async function age(payer, payee, ms) {
+        await db.execute({ sql: "UPDATE referral_disputes SET raised_at = raised_at - ? WHERE payer_id = ? AND payee_id = ?", args: [ms, payer, payee] });
+      }
+
+      const QL = await user("h5ql"), X = await user("h5x"), Y = await user("h5y"), R = await user("h5r"), OP = await user("h5op");
+      await db.execute({ sql: "INSERT INTO operators (user_id, granted_at) VALUES (?, ?)", args: [OP, now()] });
+      await edge(X, QL); await edge(Y, X);
+
+      const T0 = now() - 61 * DAY;
+      const D = nid("deal");
+      await db.execute({ sql: "INSERT INTO deals (id, reporter_id, buyer_token, total_usd, created_at) VALUES (?, ?, ?, ?, ?)", args: [D, R, "v2:00000000", 50000, T0] });
+      await db.execute({ sql: "INSERT INTO deal_participants (deal_id, user_id, role, share_usd, status, confirmed_at) VALUES (?, ?, 'reporter', 0, 'confirmed', ?)", args: [D, R, T0] });
+      await db.execute({ sql: "INSERT INTO deal_participants (deal_id, user_id, role, share_usd, status, confirmed_at) VALUES (?, ?, 'participant', 50000, 'confirmed', ?)", args: [D, Y, T0] });
+
+      const out = {};
+      out.baseline = await behind(Y);
+      await ref.raiseDispute(Y, "h5x"); await ref.raiseDispute(Y, "h5ql");
+      out.afterRaise = await behind(Y);
+      out.reRaise = (await ref.raiseDispute(Y, "h5x")).error;
+      out.openCount = (await ref.listOpenDisputes()).length;
+      await age(Y, X, 46 * DAY); await age(Y, QL, 46 * DAY);
+      out.afterExpiry = await behind(Y);
+      out.expiredFlagged = (await ref.listOpenDisputes()).every((d) => d.windowExpired === true);
+      out.uphold = (await ref.resolveDispute(OP, ref.disputeId(Y, X), "uphold")).status;
+      out.afterUphold = await behind(Y);
+      out.reject = (await ref.resolveDispute(OP, ref.disputeId(Y, QL), "reject")).status;
+      out.afterReject = await behind(Y);
+      out.openAfterResolve = (await ref.listOpenDisputes()).length;
+      out.doubleResolve = (await ref.resolveDispute(OP, ref.disputeId(Y, X), "reject")).error;
+      out.nonOperator = (await ref.resolveDispute(Y, ref.disputeId(Y, QL), "uphold")).error;
+      out.badRuling = (await ref.resolveDispute(OP, ref.disputeId(Y, QL), "maybe")).error;
+
+      dbmod.closeDb();
+      for (const s of ["", "-journal", "-wal", "-shm"]) { try { fsp.rmSync(tmp + s); } catch {} }
+      console.log("H5::" + JSON.stringify(out));
+      process.exit(0);
+    })().catch((e) => { console.error(e); process.exit(1); });
+  `;
+  const stdout = execFileSync(process.execPath, ["-e", script], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: { ...process.env },
+  });
+  const line = stdout.split("\n").find((l) => l.startsWith("H5::"));
+  expect(line, "H5 probe produced output").toBeTruthy();
+  return JSON.parse(line!.slice("H5::".length));
+}
+
+test("09 DISPUTE LIFECYCLE: raise lifts the gate for a bounded window; expiry and reject revert it; uphold keeps it lifted; resolved pairs cannot be re-raised", async () => {
+  const r = disputeLifecycleProbe();
+
+  // Two aged, gating pairs before any dispute.
+  expect(r.baseline).toEqual(["h5ql", "h5x"]);
+  // A fresh dispute on both lifts the gate.
+  expect(r.afterRaise).toBe(false);
+  // One dispute per pair, ever: a rejected/resolved pair cannot buy a new window.
+  expect(r.reRaise).toBe("already_disputed");
+  expect(r.openCount).toBe(2);
+
+  // THE GUARD: past the 45-day window the debt reverts to gating. Pre-H5 this
+  // stayed lifted forever.
+  expect(r.afterExpiry).toEqual(["h5ql", "h5x"]);
+  expect(r.expiredFlagged).toBe(true);
+
+  // An operator upholds X (lifts past the window); ql, rejected, keeps gating.
+  expect(r.uphold).toBe("upheld");
+  expect(r.afterUphold).toEqual(["h5ql"]);
+  expect(r.reject).toBe("rejected");
+  expect(r.afterReject).toEqual(["h5ql"]);
+
+  // Resolved pairs leave the operator queue; a second ruling is refused; only
+  // operators rule; the ruling must be a real verb.
+  expect(r.openAfterResolve).toBe(0);
+  expect(r.doubleResolve).toBe("already_resolved");
+  expect(r.nonOperator).toBe("not_operator");
+  expect(r.badRuling).toBe("bad_ruling");
 });

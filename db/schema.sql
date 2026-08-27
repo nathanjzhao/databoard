@@ -666,3 +666,35 @@ CREATE TABLE IF NOT EXISTS referral_disputes (
   PRIMARY KEY (payer_id, payee_id)
 );
 
+-- ---------------------------------------------------------------------------
+-- referral_dispute_status
+--
+-- The operator's resolution of a dispute, kept in its own table rather than
+-- as columns on referral_disputes: this schema is applied CREATE ... IF NOT
+-- EXISTS only, so a new column on a table that predates it would silently not
+-- exist. A dispute with NO row here is 'open'. Resolution writes exactly one
+-- row, first writer wins (PRIMARY KEY), so a second operator cannot overwrite
+-- the first's ruling.
+--
+-- dispute_id is the parent row's identity spelled as one string,
+-- payer_id || '.' || payee_id. User ids are prefixed base64url and contain no
+-- dot, so the first dot splits it back cleanly; it is also what the resolve
+-- route carries in its path.
+--
+-- Why this exists (the enforcement it restores): a raised dispute lifts the
+-- posting gate, but only for a bounded window (lib/referrals.ts) or until an
+-- operator resolves it here. 'upheld' keeps the gate lifted; 'rejected', like
+-- the window lapsing, lets the debt revert to gating. Without a resolution
+-- path a single pre-emptive dispute would disarm the gate forever.
+--
+-- No PII here: an opaque composite id, one of three status strings, a
+-- timestamp, and the resolving operator's user id (a handle, nothing more).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS referral_dispute_status (
+  dispute_id  TEXT    PRIMARY KEY,   -- payer_id || '.' || payee_id
+  status      TEXT    NOT NULL DEFAULT 'open'
+                CHECK (status IN ('open', 'upheld', 'rejected')),
+  resolved_at INTEGER,
+  resolved_by TEXT    REFERENCES users(id)
+);
+

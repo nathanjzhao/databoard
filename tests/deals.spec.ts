@@ -373,10 +373,10 @@ function computeExpectedBoard(rows: PRow[]): Map<string, Metrics> {
       own.valueToSelfUsd += p.shareUsd;
       note(own, p.confirmedAt);
     }
-    if (solo) {
-      rep.valueToSelfUsd += reporter.shareUsd;
-      note(rep, reporter.confirmedAt);
-    } else if (confirmed.length > 0) {
+    // A solo deal is a unilateral claim: it earns nothing on the ranked self
+    // column and notes no ranking timestamp, exactly as lib/stats.ts does (H2).
+    // Only a deal at least one counterparty has co-signed credits the reporter.
+    if (!solo && confirmed.length > 0) {
       rep.valueToSelfUsd += reporter.shareUsd;
     }
 
@@ -818,7 +818,7 @@ test("06 decline path: D reports naming C and E; C declines, E confirms; only E'
   await signOut(page);
 });
 
-test("07 a $10k solo deal by C bumps only C's self value, to $50k displayed", async () => {
+test("07 a $10k solo deal by C earns nothing ranked; it surfaces only as claimed (unattested)", async () => {
   await logIn(page, USER_C.username, USER_C.password);
   const soloId = await recordDeal(page, {
     buyer: DEAL3.buyer,
@@ -832,13 +832,18 @@ test("07 a $10k solo deal by C bumps only C's self value, to $50k displayed", as
   await shot(page, "deal3-solo-claimed");
 
   await page.goto("/leaderboard");
+  // C's ranked columns do NOT move: the $10k solo claim is worth zero for
+  // reputation, exactly as it is worth zero for the referral fee (H2). To self
+  // stays $40k, not $50k.
   await expectBoardRow(page, USER_C.username, {
     collaborators: "2",
     toOthers: "$50k",
-    toSelf: "$50k",
+    toSelf: "$40k",
     evidence: "1",
   });
-  // Nobody else moved.
+  // The claim surfaces only in the separate, unranked claimed column.
+  await expect(boardRow(page, USER_C.username).locator("td").nth(6)).toHaveText("$10k");
+  // Nobody else moved, and nobody with only solo claims is ranked.
   await expectBoardRow(page, USER_D.username, {
     collaborators: "1",
     toOthers: "$10k",
@@ -851,12 +856,14 @@ test("07 a $10k solo deal by C bumps only C's self value, to $50k displayed", as
     toSelf: "$30k",
     evidence: "1",
   });
+  // The board announces the policy and the board-wide unattested total.
+  await expect(page.getByText("Claimed (unattested)").first()).toBeVisible();
   await shot(page, "leaderboard-final");
 
   await expectExactSums(USER_C.username, {
     collaborators: 2,
     valueToOthersUsd: 50_000,
-    valueToSelfUsd: 50_000,
+    valueToSelfUsd: 40_000, // the solo $10k credits nothing here
   });
   await signOut(page);
 });
@@ -915,6 +922,7 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     "operators",
     "ops_errors",
     "rate_limits",
+    "referral_dispute_status",
     "referral_disputes",
     "referral_settlements",
     "sessions",

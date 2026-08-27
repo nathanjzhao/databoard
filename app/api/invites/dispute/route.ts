@@ -13,6 +13,7 @@
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { DbNotConfiguredError } from "@/lib/db";
+import { RATE_LIMITS, checkRateLimit, retryPhrase } from "@/lib/ratelimit";
 import { raiseDispute } from "@/lib/referrals";
 
 export const runtime = "nodejs";
@@ -21,6 +22,19 @@ export const dynamic = "force-dynamic";
 export async function POST(request: Request) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Sign in first." }, { status: 401 });
+
+  // A dispute lifts the posting gate, so cap how fast one account can raise
+  // them; the limiter keys on the user id, which goes straight into an HMAC.
+  const limited = await checkRateLimit(RATE_LIMITS.disputePerUser, user.id);
+  if (limited.limited) {
+    return NextResponse.json(
+      {
+        error: `Too many disputes raised. Try again in ${retryPhrase(limited.retryAfterSeconds)}.`,
+        retryAfterSeconds: limited.retryAfterSeconds,
+      },
+      { status: 429, headers: { "retry-after": String(limited.retryAfterSeconds) } },
+    );
+  }
 
   let body: { withUsername?: string };
   try {

@@ -109,7 +109,7 @@ export default function TermsPage() {
         .
       </p>
       <p className="mt-2 font-mono text-[0.6875rem] text-ink-faint">
-        last updated 2026-08-24
+        last updated 2026-08-26
       </p>
 
       <nav className="mt-8 flex gap-x-6 gap-y-2 overflow-x-auto border-y border-rule py-3">
@@ -179,7 +179,11 @@ export default function TermsPage() {
               <li>
                 One account per contact. The contact&apos;s blind index is
                 UNIQUE in the schema, so the phone number or email that opened
-                an account cannot open another.
+                an account cannot open another. Aliases of one inbox count as
+                that one contact: a +tag on any address, and the dots inside a
+                Gmail address, are stripped before the index is computed, so
+                user+a@ and user+b@, or n.a.me@gmail and name@gmail, land on the
+                same seat instead of minting new ones.
               </li>
               <li>
                 The password is the account. No contact is stored, so no
@@ -348,15 +352,36 @@ export default function TermsPage() {
                 (0.0625%) to theirs, and so on, capped at six steps.
               </li>
               <li>
-                Earnings means your own confirmed shares on deals at
-                co-attested tier or better. Solo claims, declined shares and
-                pending shares accrue nothing.
+                Earnings means your own confirmed shares on deals where at
+                least one named counterparty has also confirmed. Your share
+                counts as soon as one counterparty signs; a different party
+                still sitting pending on the same deal does not delay it. A
+                declined share, or a share of yours you have not confirmed,
+                counts nothing.
+              </li>
+              <li>
+                A solo deal, one you record with no counterparty to attest it,
+                is a unilateral claim. It accrues no fee, and it earns nothing
+                on the leaderboard either: the predicate that grants standing
+                and the one that charges the fee are the same, so recording big
+                numbers alone buys neither. Solo totals are shown, clearly
+                labeled and unranked, on the leaderboard.
+              </li>
+              <li>
+                No confirmed share is fee-free. Every earner owes at least the
+                first step, 2.5%. If you joined on an invite that step goes to
+                your inviter. A grandfathered account with nobody recorded above
+                it (a seat from before invites existed) owes that same 2.5%
+                floor to the house, the operator account every chain is rooted
+                at. A short chain is not padded past the floor: only the missing
+                first step is ever charged to the house, never a deeper step.
               </li>
               <li>
                 The platform computes and records these figures; it never
                 holds or moves the money. You settle directly with each
                 ancestor, off the platform, and either of you can record and
-                confirm the settlement on the invites page.
+                confirm the settlement on the invites page. The house floor
+                settles and disputes the same way, against the operator account.
               </li>
               <li>
                 Falling more than 60 days behind gates posting new asks and

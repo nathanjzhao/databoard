@@ -36,8 +36,11 @@ import { isOperator } from "@/lib/moderation";
 import {
   MAX_REFERRAL_DEPTH,
   computeReferralLedger,
+  houseFloorReceivables,
   listOpenDisputes,
   settlementStanding,
+  structureSignalsFor,
+  type StructureFlags,
 } from "@/lib/referrals";
 
 export const metadata: Metadata = { title: "Invites" };
@@ -63,14 +66,17 @@ export default async function InvitesPage() {
   const user = await getSessionUser();
   if (!user) redirect("/gate");
 
-  const [codes, inviter, invitees, ledger, standing, operator] = await Promise.all([
-    listInvitesFor(user.id),
-    invitedBy(user.id),
-    listInvitees(user.id),
-    computeReferralLedger(user.id),
-    settlementStanding(user.id),
-    isOperator(user.id),
-  ]);
+  const [codes, inviter, invitees, ledger, standing, operator, signals, houseReceivables] =
+    await Promise.all([
+      listInvitesFor(user.id),
+      invitedBy(user.id),
+      listInvitees(user.id),
+      computeReferralLedger(user.id),
+      settlementStanding(user.id),
+      isOperator(user.id),
+      structureSignalsFor(user.id),
+      houseFloorReceivables(user.id),
+    ]);
   const disputes = operator ? await listOpenDisputes() : [];
   const unusedCount = codes.filter((c) => !c.usedByUsername).length;
 
@@ -292,7 +298,8 @@ export default async function InvitesPage() {
                       @{a.username}
                     </span>
                     <span className="font-mono text-[0.6875rem] text-ink-faint">
-                      {depthLabel(a.depth)} · {rateLabel(a.depth)} of your earnings
+                      {a.isHouse ? "house floor" : depthLabel(a.depth)} ·{" "}
+                      {rateLabel(a.depth)} of your earnings
                     </span>
                     {a.disputed ? (
                       <span className="bg-red-wash px-1.5 py-0.5 font-mono text-[0.625rem] text-red">
@@ -343,6 +350,87 @@ export default async function InvitesPage() {
         </div>
       </section>
 
+      {/* ------------------------------------------------ house floor */}
+      {houseReceivables.length > 0 ? (
+        <section className="mt-12 border-t border-rule pt-8">
+          <h2 className="bt-display text-[1.5rem] text-ink">
+            House floor
+            <span className="ml-3 bt-token align-middle">operator view</span>
+          </h2>
+          <p className="mt-2 max-w-[62ch] text-[0.8125rem] leading-relaxed text-ink-faint">
+            Accounts with nobody recorded above them still owe the first step,
+            2.5%, on their confirmed earnings. They are not in anyone&apos;s
+            downline, so the floor lands here, on the house. Record a payment on
+            a member&apos;s row when they settle it off the platform.
+          </p>
+          <div className="mt-4 overflow-x-auto border border-rule bg-panel">
+            <table className="w-full text-left text-[0.8125rem]">
+              <thead>
+                <tr className="border-b border-rule">
+                  <th className="bt-label px-4 py-2.5 font-normal">member</th>
+                  <th className="bt-label px-2 py-2.5 text-right font-normal">earnings</th>
+                  <th className="bt-label px-2 py-2.5 text-right font-normal">accrued</th>
+                  <th className="bt-label px-2 py-2.5 text-right font-normal">settled</th>
+                  <th className="bt-label px-2 py-2.5 text-right font-normal">outstanding</th>
+                  <th className="px-4 py-2.5" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-rule">
+                {houseReceivables.map((h) => (
+                  <tr key={h.username} className="align-top">
+                    <td className="px-4 py-3 font-mono text-ink">
+                      @{h.username}
+                      {h.disputed ? (
+                        <span className="ml-2 bg-red-wash px-1.5 py-0.5 font-mono text-[0.625rem] text-red">
+                          disputed
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-2 py-3 text-right font-mono tabular-nums text-ink-dim">
+                      {usdWhole(h.lifetimeEarningsCents)}
+                    </td>
+                    <td className="px-2 py-3 text-right font-mono tabular-nums text-ink">
+                      {usdWhole(h.accruedCents)}
+                    </td>
+                    <td className="px-2 py-3 text-right font-mono tabular-nums text-ink-dim">
+                      {usdWhole(h.settledCents)}
+                    </td>
+                    <td className="px-2 py-3 text-right font-mono tabular-nums text-ink">
+                      {usdWhole(h.outstandingCents)}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <RecordSettlementForm payerUsername={h.username} />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {/* --------------------------------------------- structure signals */}
+      {signals.self.reportedDeals > 0 || signals.downline.length > 0 ? (
+        <section className="mt-12 border-t border-rule pt-8">
+          <h2 className="bt-display text-[1.5rem] text-ink">Structure signals</h2>
+          <p className="mt-2 max-w-[62ch] text-[0.8125rem] leading-relaxed text-ink-faint">
+            Metadata only, no dollars and no buyer names: read-outs on how the
+            deals you report are shaped, and the same for everyone whose
+            earnings accrue to you. High unallocated value or a run of
+            never-confirming counterparties is what routing around the fee looks
+            like. These are signals for a human to read, not automatic penalties.
+          </p>
+          <div className="mt-4 space-y-px border border-rule bg-rule">
+            {signals.self.reportedDeals > 0 ? (
+              <SignalRow label="you" flags={signals.self} />
+            ) : null}
+            {signals.downline.map((f) => (
+              <SignalRow key={f.username} label={`@${f.username}`} flags={f} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {/* ------------------------------------------------- the honest print */}
       <section className="mt-12 border-t border-rule pt-8">
         <div className="border-l-2 border-amber bg-amber-wash px-4 py-3.5">
@@ -390,6 +478,28 @@ export default async function InvitesPage() {
           </ul>
         </section>
       ) : null}
+    </div>
+  );
+}
+
+/** One account's structure signals: metadata counts, no dollars. */
+function SignalRow({ label, flags }: { label: string; flags: StructureFlags }) {
+  const pct = Math.round(flags.unallocatedRatioBps / 100);
+  const highUnallocated = flags.unallocatedRatioBps >= 5000;
+  const hasChronic = flags.chronicallyPendingCounterparties > 0;
+  return (
+    <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 bg-panel px-4 py-3 text-[0.75rem]">
+      <span className="font-mono text-[0.8125rem] text-ink">{label}</span>
+      <span className="text-ink-faint">
+        {flags.reportedDeals} reported
+      </span>
+      <span className={highUnallocated ? "text-amber" : "text-ink-faint"}>
+        {pct}% unallocated
+      </span>
+      <span className="text-ink-faint">{flags.exactSplitDeals} exact splits</span>
+      <span className={hasChronic ? "text-amber" : "text-ink-faint"}>
+        {flags.chronicallyPendingCounterparties} never-confirmed
+      </span>
     </div>
   );
 }

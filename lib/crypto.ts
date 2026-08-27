@@ -73,9 +73,52 @@ export function detectContactKind(raw: string): ContactKind | null {
 }
 
 /**
- * Canonical form of a contact, so that "+1 (415) 555-0142" and "14155550142"
- * produce the same blind index. Emails lowercase and trim; phones reduce to
- * digits only. Returns "" when the input is not a usable contact.
+ * Canonical form of an email, so that provider-level aliases of one inbox
+ * collapse to one blind index. Applied before hashing:
+ *   - lowercase the whole address;
+ *   - drop a "+tag" suffix from the local part (everything from the first
+ *     "+" up to the "@"); the major providers route "user+anything" to
+ *     "user", so the tag mints no new mailbox;
+ *   - for gmail.com / googlemail.com the dots in the local part are not
+ *     significant, so strip them, and fold googlemail.com onto gmail.com.
+ * Other providers keep their dots: elsewhere a dot can be a real second
+ * mailbox, and collapsing it would merge two strangers.
+ *
+ * Input is assumed already validated as an email (detectContactKind, which
+ * guarantees exactly one "@" and a non-empty local part). If stripping a
+ * "+tag" would empty the local part (a pathological "+tag@host"), the strip
+ * is skipped so the index stays non-empty and stable.
+ */
+export function canonicalizeEmail(email: string): string {
+  const at = email.lastIndexOf("@");
+  if (at <= 0) return email.trim().toLowerCase();
+  let local = email.slice(0, at).trim().toLowerCase();
+  let domain = email.slice(at + 1).trim().toLowerCase();
+
+  // "+tag" is only significant to the sender; strip it. plus > 0 keeps a
+  // degenerate "+tag@host" (empty local) from collapsing to just "@host".
+  const plus = local.indexOf("+");
+  if (plus > 0) local = local.slice(0, plus);
+
+  if (domain === "googlemail.com") domain = "gmail.com";
+  if (domain === "gmail.com") local = local.replace(/\./g, "");
+
+  return `${local}@${domain}`;
+}
+
+/**
+ * Canonical form of a contact, so that aliases of one inbox or one phone
+ * number produce the same blind index. Emails go through canonicalizeEmail
+ * (lowercase, "+tag" stripped, gmail dots folded); phones reduce to digits,
+ * with a bare 10-digit US number and its +1 form treated alike. Returns ""
+ * when the input is not a usable contact.
+ *
+ * MIGRATION, stated plainly: tightening the email rule changes
+ * contact_blind_index for NEW signups only. Rows written before this
+ * canonicalization keep their old index, and there is no re-indexing pass,
+ * because the raw contact was never stored and cannot be recomputed. Two
+ * gmail aliases that each already hold an account stay two accounts; the
+ * rule stops a THIRD alias of the same inbox from minting a fresh one.
  *
  * The return value is used immediately and never stored.
  */
@@ -83,7 +126,7 @@ export function normalizeContact(raw: string): string {
   const kind = detectContactKind(raw);
   if (!kind) return "";
   const t = raw.trim();
-  if (kind === "email") return t.toLowerCase();
+  if (kind === "email") return canonicalizeEmail(t);
   const digits = t.replace(/\D/g, "");
   // Treat a bare 10-digit US number and its +1 form as the same contact.
   return digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
