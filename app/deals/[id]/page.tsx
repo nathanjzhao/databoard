@@ -19,6 +19,7 @@ import { TierLadder, TierTag } from "@/components/deals/tier-ladder";
 import { ConfirmCard } from "@/components/deals/confirm-card";
 import { EvidenceCommit } from "@/components/deals/evidence-commit";
 import { ReceiptPanel } from "@/components/deals/receipt-panel";
+import { PartyAttest } from "@/components/deals/party-attest";
 import { confirmedFraction, usdExact } from "@/components/deals/format";
 import { getSessionUser } from "@/lib/auth";
 import { isDbConfigured } from "@/lib/db";
@@ -27,6 +28,7 @@ import { getDealForUser, type DealDetail } from "@/lib/deals";
 import {
   CERTIFICATE_DISPUTE_WINDOW_DAYS,
   provenanceLine,
+  partyBaseFieldsFromPayload,
 } from "@/lib/receipts";
 import { loggedReceiptForDeal } from "@/lib/translog";
 
@@ -164,6 +166,53 @@ export default async function DealPage({
               })}
               disputeWindowDays={CERTIFICATE_DISPUTE_WINDOW_DAYS}
             />
+          </div>
+          {/* Party signatures: each confirmed participant can sign the receipt
+              with their own key, so the operator cannot forge a co-attested
+              one. Present only once at least one party holds a signing key. */}
+          {receiptPayload.attest && receiptPayload.log
+            ? (() => {
+                const fields = partyBaseFieldsFromPayload(receiptPayload);
+                if (!fields) return null;
+                return (
+                  <div className="mt-3">
+                    <PartyAttest
+                      dealId={deal.id}
+                      viewerHandle={user.username}
+                      viewerInRoster={fields.signers.some(
+                        (s) => s.handle === user.username,
+                      )}
+                      viewerConfirmed={deal.viewer.status === "confirmed"}
+                      fields={fields}
+                      sigs={receiptPayload.attest.sigs}
+                    />
+                  </div>
+                );
+              })()
+            : null}
+        </section>
+      ) : null}
+
+      {/* ----------------------------------------------------- exchange */}
+      {!solo &&
+      deal.viewer.status === "confirmed" &&
+      (deal.tier === "co_attested" || deal.tier === "evidence_committed") ? (
+        <section className="mt-8">
+          <h2 className="bt-label">Dataset exchange</h2>
+          <div className="mt-3 border border-rule bg-panel px-5 py-4">
+            <p className="max-w-[68ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Run the actual data handoff on the smallest trust it needs:
+              commit, encrypt, pay, reveal, each step signed by the party that
+              took it. It bounds and evidences cheating; it is not atomic. The
+              server stores commitments and signatures only, never the data or
+              the key.
+            </p>
+            <Link
+              href={`/deals/${deal.id}/exchange`}
+              className="bt-btn bt-btn-primary mt-3 inline-block px-4 py-1.5 text-[0.8125rem]"
+            >
+              Open the exchange
+            </Link>
           </div>
         </section>
       ) : null}
