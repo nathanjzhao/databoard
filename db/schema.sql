@@ -518,6 +518,75 @@ CREATE TABLE IF NOT EXISTS deal_close_dates (
 );
 
 -- ---------------------------------------------------------------------------
+-- user_signing_keys
+--
+-- One Ed25519 PUBLIC signing key per account, the sibling of user_e2ee_keys:
+-- where that key ENCRYPTS, this one SIGNS. The browser derives it from the
+-- password (lib/e2ee.ts deriveSigningKeys): the one e2ee scrypt seed, split
+-- with HKDF-SHA256 under a DISTINCT domain ("databoard-e2ee-v1/sign") so the
+-- signing public key is unrelated to the X25519 encryption public key and
+-- neither shares anything with the server's random password salt. PUBLIC key
+-- material only, base64url; the private half is recomputed from the password
+-- in the browser and never travels. Registered at login/signup where e2ee is
+-- (app/api/signing/pubkey), and served back as a public key directory so a
+-- receipt verifier with no account can confirm a signing key belongs to a
+-- handle.
+--
+-- What it is FOR: attestations the PARTIES sign with their own keys, not the
+-- operator's. A co-attested deal's receipt now carries an Ed25519 signature
+-- from each confirmed participant over the canonical receipt bytes
+-- (deal_receipt_signatures, lib/receipt-attest.ts), and every step of a
+-- commit-encrypt-pay-reveal exchange is signed with this key (lib/exchange.ts).
+-- A valid receipt or chain therefore proves the NAMED PARTIES attested, not
+-- merely that the operator's MAC is intact.
+--
+-- Write-once with the same honesty as user_e2ee_keys: the first key an account
+-- registers stands (a swap would let a hijacked session forge that account's
+-- attestations, so the API refuses overwrites), the binding is
+-- trust-on-first-use against an operator-served directory rather than a
+-- key-transparency proof, and a mismatch between this key and the one a
+-- password derives is loud in the client. No row = the account predates
+-- signing keys and has not signed in since; its receipts are platform-MAC only.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_signing_keys (
+  user_id    TEXT    PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  pubkey     TEXT    NOT NULL,   -- base64url Ed25519 public key, 32 bytes
+  created_at INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- deal_receipt_signatures
+--
+-- Party signatures on a co-attested deal's portable receipt. Each confirmed
+-- participant may sign the canonical receipt bytes (tier, participant signing
+-- pubkeys, blinded buyer, bucketed amount, attested_at, deal id, translog seq)
+-- with their own Ed25519 key (user_signing_keys), and that signature is stored
+-- here and folded into the receipt token (lib/receipts.ts, lib/party-sigs.ts).
+-- The result: a valid co-attested receipt proves the parties THEMSELVES
+-- attested, so the operator cannot forge one without their keys.
+--
+-- The row is keyed by (deal_id, user_id, seq): seq is the receipt_minted
+-- transparency-log sequence the signature commits to. A receipt's bytes change
+-- when the deal changes tier (a new leaf, a new seq), so a signature is scoped
+-- to the exact receipt state it signed; a later state simply has no signature
+-- yet and the UI asks the party to re-sign. pubkey is echoed for convenience
+-- and MUST equal the signer's write-once user_signing_keys row (checked before
+-- the row is written). No PII: two ids, a seq, and public key + signature,
+-- both base64url.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS deal_receipt_signatures (
+  deal_id    TEXT    NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+  user_id    TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  seq        INTEGER NOT NULL,   -- receipt_minted translog seq the sig commits to
+  pubkey     TEXT    NOT NULL,   -- base64url Ed25519 public key that signed
+  sig        TEXT    NOT NULL,   -- base64url Ed25519 signature over the canonical receipt bytes
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (deal_id, user_id, seq)
+);
+
+CREATE INDEX IF NOT EXISTS idx_deal_receipt_sigs ON deal_receipt_signatures(deal_id, seq);
+
+-- ---------------------------------------------------------------------------
 -- ops_errors
 --
 -- Server errors, captured by the Next instrumentation hook (instrumentation.ts
@@ -798,5 +867,119 @@ CREATE TABLE IF NOT EXISTS translog_events (
   leaf_seq   INTEGER NOT NULL REFERENCES translog_leaves(seq),
   leaf_hash  TEXT    NOT NULL,
   created_at INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- exchange_sessions  (commit-encrypt-pay-reveal dataset handoff, Tier A)
+--
+-- One session per attempted dataset-for-payment handoff riding on a deal. The
+-- protocol (lib/exchange.ts, docs/EXCHANGE.md) minimizes counterparty trust
+-- for the actual data handoff with client-side crypto: the seller chunks and
+-- AEAD-encrypts the dataset in their browser, commits a Merkle manifest over
+-- the plaintext chunk hashes AND over the ciphertext chunk hashes plus a
+-- salted commitment to the per-deal key, and only reveals the key after the
+-- buyer has verified the ciphertext and signaled payment. Every step is a
+-- SIGNED, hash-linked event (exchange_events) that both parties' keys gate.
+--
+-- WHO SIGNS. Each party is PINNED to one Ed25519 signing key at their first
+-- step: the seller's key is fixed by the genesis commit (seller_signing_pubkey)
+-- and the buyer's by their first event (buyer_signing_pubkey, NULL until then).
+-- Every later step by a role must be signed by that role's pinned key, so a
+-- valid chain proves the same two keys took every step, in order. The key is
+-- the account's own password-derived signing key (lib/e2ee.ts deriveSigningKeys:
+-- an Ed25519 pair split from the e2ee seed under a distinct HKDF domain, so it
+-- never leaves the device and is the same on any device). When the account has
+-- registered that key in the user_signing_keys directory (the receipt path uses
+-- the same one), the append path ALSO requires each step to be signed with the
+-- registered key, so a step cannot be signed by any key that is not the acting
+-- account's own identity key; a legacy account with no registered key falls back
+-- to trust-on-first-use on the session-pinned key.
+--
+-- WHAT THIS ROW HOLDS, and nothing more: the two participant ids (both must be
+-- CONFIRMED participants of the deal), the two pinned signing pubkeys, the
+-- current state, and COMMITMENTS.
+--   plaintext_root / ciphertext_root  RFC 6962 Merkle roots over chunk hashes;
+--     hashes of hashes, they reveal nothing about the data.
+--   dek_commit                        SHA-256(domain || deal_id || dek_salt ||
+--     DEK): a hash of the data-encryption key, never the key.
+--   chunk_count / chunk_size          structural, not content.
+--   size_bucket                       a COARSE byte-size bucket ("~1 MB"),
+--     never the exact size.
+-- The server never sees the dataset, the DEK, or any exact figure. It sees
+-- commitments, signatures, and state transitions. HONEST BOUND: this makes
+-- cheating detectable and evidenced (a party that stops after receiving is
+-- provable from the signed chain; chunking caps exposure to one chunk), it
+-- does NOT make the exchange atomic. Real atomicity needs an on-chain escrow
+-- (Tier B, docs/EXCHANGE.md); it is not built here and is labeled as such.
+--
+-- demo_ciphertext is the ONE exception to "commitments only", and it is DEMO
+-- SCAFFOLDING: a size-capped, opaque AEAD ciphertext blob (base64) the server
+-- treats as bytes it cannot read, so the flow is testable end to end in one
+-- place. In production the ciphertext moves OFF the platform (directly, or
+-- through the E2EE thread as ciphertext) and this column stays NULL. It is not
+-- covered by any signature; the buyer verifies it against ciphertext_root.
+--
+-- head_seq / head_hash pin the tip of the signed event chain, so appending an
+-- event is a compare-and-set against the tip the appender last saw.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS exchange_sessions (
+  id              TEXT    PRIMARY KEY,     -- exch_..., chosen by the seller's client, bound into the genesis leaf
+  deal_id         TEXT    NOT NULL REFERENCES deals(id) ON DELETE CASCADE,
+  seller_user_id       TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  buyer_user_id        TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  seller_signing_pubkey TEXT   NOT NULL,   -- base64url Ed25519, pinned at the genesis commit
+  buyer_signing_pubkey  TEXT,              -- base64url Ed25519, pinned at the buyer's first event; NULL until then
+  state           TEXT    NOT NULL         -- committed | ciphertext_ack | payment_signaled | dek_revealed | completed | aborted
+                    CHECK (state IN ('committed','ciphertext_ack','payment_signaled','dek_revealed','completed','aborted')),
+  plaintext_root  TEXT    NOT NULL,        -- 64-hex Merkle root over plaintext chunk hashes
+  ciphertext_root TEXT    NOT NULL,        -- 64-hex Merkle root over ciphertext chunk hashes
+  dek_commit      TEXT    NOT NULL,        -- 64-hex SHA-256(domain||deal_id||salt||DEK)
+  chunk_count     INTEGER NOT NULL CHECK (chunk_count > 0),
+  chunk_size      INTEGER NOT NULL CHECK (chunk_size > 0),
+  size_bucket     TEXT    NOT NULL,        -- coarse byte-size bucket, never exact
+  head_seq        INTEGER NOT NULL,        -- seq of the latest event (chain tip)
+  head_hash       TEXT    NOT NULL,        -- event_hash of the latest event
+  demo_ciphertext TEXT,                    -- DEMO ONLY: opaque AEAD ciphertext blob (base64); NULL in production
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_exchange_sessions_deal ON exchange_sessions(deal_id);
+
+-- ---------------------------------------------------------------------------
+-- exchange_events  (the signed, hash-linked state transitions)
+--
+-- One row per step of a session, forming a tamper-evident chain: event N
+-- carries prev_hash = event_hash of event N-1 (64 zeros for the genesis
+-- commit), and event_hash = SHA-256(payload_json), where payload_json is the
+-- CANONICAL JSON of the signed leaf. Reordering, dropping, or altering any
+-- event breaks the chain, and each event is Ed25519-SIGNED by the acting
+-- party over payload_json, so neither the operator nor the counterparty can
+-- forge a step: a valid chain proves the NAMED PARTIES THEMSELVES took each
+-- step, in order.
+--
+-- payload_json is metadata and commitments only, the same fields the session
+-- row holds plus the step's own commitment (a ciphertext root the buyer
+-- recomputed, a payment-reference COMMITMENT with no amount and no raw ref,
+-- an abort reason). No dataset, no DEK, no exact figure, no PII beyond the
+-- pseudonymous handles already on the deal. signer_pubkey is the Ed25519 key
+-- that signed; the append path checks it equals the acting role's key pinned
+-- on the session (seller_signing_pubkey / buyer_signing_pubkey), so a step
+-- cannot be signed by a stranger's key or a mid-flow key swap.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS exchange_events (
+  session_id    TEXT    NOT NULL REFERENCES exchange_sessions(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,          -- 1-based within the session
+  type          TEXT    NOT NULL           -- commit | ciphertext_ack | payment_signaled | dek_revealed | completed | abort
+                  CHECK (type IN ('commit','ciphertext_ack','payment_signaled','dek_revealed','completed','abort')),
+  actor_role    TEXT    NOT NULL CHECK (actor_role IN ('seller','buyer')),
+  actor_user_id TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  prev_hash     TEXT    NOT NULL,          -- event_hash of seq-1, or 64 zeros for seq 1
+  payload_json  TEXT    NOT NULL,          -- canonical JSON of the signed leaf
+  event_hash    TEXT    NOT NULL,          -- SHA-256(payload_json), hex
+  signer_pubkey TEXT    NOT NULL,          -- base64url Ed25519 public key that signed
+  signature     TEXT    NOT NULL,          -- base64url Ed25519 signature over payload_json
+  created_at    INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq)
 );
 

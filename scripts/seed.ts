@@ -12,7 +12,7 @@
  * Every demo account's password is "demo-demo-demo".
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -32,15 +32,40 @@ import {
 } from "../lib/deals.ts";
 import { consumeInvite, mintInvite } from "../lib/invites.ts";
 import { confirmSettlement, recordSettlement } from "../lib/referrals.ts";
-import { getSignedHead } from "../lib/translog.ts";
+import { getSignedHead, loggedReceiptForDeal } from "../lib/translog.ts";
+import { getDealForUser } from "../lib/deals.ts";
+import { partyBaseFieldsFromPayload } from "../lib/receipts.ts";
+import { partySigningBase, signReceiptBase } from "../lib/receipt-attest.ts";
+import { storePartySig } from "../lib/party-sigs.ts";
 import { appendMessage } from "../app/api/threads/store.ts";
 import {
+  createExchangeSession,
+  appendExchangeEvent,
+  setDemoBlob,
+} from "../app/api/exchange/store.ts";
+import {
   deriveIdentityKeys,
+  signingKeysFromSeed,
   generateThreadKey,
   sealMessage,
+  toB64url,
   wrapThreadKey,
   type IdentityKeys,
+  type SigningKeys,
 } from "../lib/e2ee.ts";
+import {
+  EXCHANGE_VERSION,
+  GENESIS_PREV_HASH,
+  encryptDataset,
+  eventHash,
+  generateDek,
+  dekCommitHex,
+  newSessionId,
+  paymentCommitHex,
+  signLeaf,
+  type ExchangeLeaf,
+} from "../lib/exchange.ts";
+import type { SignedEventInput } from "../app/api/exchange/store.ts";
 
 const DEMO_PASSWORD = "demo-demo-demo";
 
@@ -491,6 +516,9 @@ async function main() {
     "invites",
     "hidden_asks",
     "operators",
+    "exchange_events",
+    "exchange_sessions",
+    "deal_receipt_signatures",
     "deal_participants",
     "deals",
     "messages",
@@ -504,6 +532,7 @@ async function main() {
     "ask_terms",
     "asks",
     "sessions",
+    "user_signing_keys",
     "user_e2ee_keys",
     "users",
   ]) {
@@ -512,6 +541,7 @@ async function main() {
 
   const userIds = new Map<string, string>();
   const userKeys = new Map<string, IdentityKeys>();
+  const userSigningKeys = new Map<string, SigningKeys>();
   for (const u of USERS) {
     const created = await createUser(
       u.username,
@@ -529,6 +559,17 @@ async function main() {
     await db.execute({
       sql: `INSERT INTO user_e2ee_keys (user_id, pubkey, created_at) VALUES (?, ?, ?)`,
       args: [created.user.id, keys.publicKey, now()],
+    });
+    // The Ed25519 SIGNING key, registered exactly the way login/signup do it:
+    // split off the same e2ee seed (no second scrypt), public half written
+    // write-once. This is what lets a demo user party-sign a receipt and sign
+    // exchange steps in a real browser, and it is what the receipt + exchange
+    // seeding below signs with.
+    const signing = signingKeysFromSeed(keys.secretKey, u.username);
+    userSigningKeys.set(u.username, signing);
+    await db.execute({
+      sql: `INSERT INTO user_signing_keys (user_id, pubkey, created_at) VALUES (?, ?, ?)`,
+      args: [created.user.id, signing.publicKey, now()],
     });
     console.log(`user  @${created.user.username} (${created.user.accountType})`);
   }
@@ -689,6 +730,7 @@ async function main() {
     console.log("mandates: 2 asks pinned (one with the post, one visibly late)");
   }
 
+  const dealIds: string[] = [];
   for (const d of DEALS) {
     const reporterId = userIds.get(d.reporter)!;
     const token = await serverMintBuyerTokenV2(d.buyer); // same rule as asks
@@ -707,6 +749,7 @@ async function main() {
       })),
     });
     if (!created.ok) throw new Error(`seed deal (${d.reporter}): ${created.error}`);
+    dealIds.push(created.dealId);
 
     // End-to-end encrypt the deal room exactly the way a browser does it:
     // random thread key, wrapped for every seat against each demo user's
@@ -874,6 +917,151 @@ async function main() {
       args: [t, threadId],
     });
     console.log(`thread legacy pre-E2EE plaintext room for @attic-lantern (no e2ee key)`);
+  }
+
+  // Party-signed receipt on a co-attested deal (Feature 1). Deal index 2 is
+  // granite-fox's Anthropic preference-pair deal, co-attested by cold-copy and
+  // midnight-audit (vellum's row is declined and so is off the roster). Minting
+  // its logged receipt fixes the receipt_minted translog seq the signatures
+  // commit to; every confirmed party then signs the canonical receipt bytes
+  // with the SAME Ed25519 key their password derives (registered above), the
+  // exact bytes the browser sign button and /receipts/verify recompute. The
+  // server stores only the signatures: a co-attested receipt the operator
+  // cannot forge, because it holds no party key.
+  {
+    const dealId = dealIds[2];
+    const deal = await getDealForUser(dealId, userIds.get("granite-fox")!);
+    if (!deal) throw new Error("seed receipt: co-attested deal not found");
+    const logged = await loggedReceiptForDeal(deal);
+    if (!logged || !logged.payload.log) {
+      throw new Error("seed receipt: deal did not mint a log-bound receipt");
+    }
+    const fields = partyBaseFieldsFromPayload(logged.payload);
+    if (!fields || fields.signers.length < 2) {
+      throw new Error("seed receipt: expected a multi-party signer roster");
+    }
+    const base = partySigningBase(fields);
+    for (const signer of fields.signers) {
+      const signing = userSigningKeys.get(signer.handle);
+      if (!signing) throw new Error(`seed receipt: no signing key for @${signer.handle}`);
+      const sig = signReceiptBase(base, signing.secretKey);
+      const stored = await storePartySig({
+        dealId: deal.id,
+        userId: userIds.get(signer.handle)!,
+        seq: fields.seq,
+        pubkey: signing.publicKey,
+        sig,
+        now: now(),
+      });
+      if (!stored.ok) throw new Error(`seed receipt sig @${signer.handle}: ${stored.error}`);
+    }
+    console.log(
+      `receipt: co-attested deal party-signed by ${fields.signers.length} parties ` +
+        `(${fields.signers.map((s) => "@" + s.handle).join(", ")}) at seq ${fields.seq}`,
+    );
+  }
+
+  // A commit-encrypt-pay-reveal exchange session, stood up PARTWAY through the
+  // steps so the /deals/[id]/exchange UI renders a live, mid-flight handoff
+  // (Feature 3). Deal index 0 (quiet-ledger's OpenAI robotics deal) between the
+  // reporter as SELLER and granite-fox as BUYER, both confirmed. Driven through
+  // the REAL store functions, so every leaf is Ed25519-signed by the acting
+  // party and hash-linked exactly as a browser would post it: seller commits
+  // (roots + DEK commitment, never the data or the key), the demo ciphertext
+  // blob is uploaded as opaque bytes, the buyer acks the ciphertext root and
+  // signals payment. It stops at payment_signaled, so the page shows the
+  // seller's DEK reveal as the next move.
+  {
+    const dealId = dealIds[0];
+    const sellerName = "quiet-ledger";
+    const buyerName = "granite-fox";
+    const seller = { id: userIds.get(sellerName)!, username: sellerName };
+    const buyer = { id: userIds.get(buyerName)!, username: buyerName };
+    const sellerSigning = userSigningKeys.get(sellerName)!;
+    const buyerSigning = userSigningKeys.get(buyerName)!;
+
+    const signInput = (leaf: ExchangeLeaf, signing: SigningKeys): SignedEventInput => ({
+      leaf,
+      eventHash: eventHash(leaf),
+      signature: signLeaf(leaf, signing.secretKey),
+      signerPubkey: signing.publicKey,
+    });
+
+    const sessionId = newSessionId();
+    const dek = generateDek();
+    const dekSalt = new Uint8Array(randomBytes(16));
+    const dataset = new TextEncoder().encode(
+      "demo dataset (synthetic): 8 household-robotics episodes, sensor+3d, off-platform in production",
+    );
+    const enc = await encryptDataset(sessionId, dataset, dek);
+    const dekCommit = dekCommitHex(dealId, dekSalt, dek);
+
+    const commitLeaf: ExchangeLeaf = {
+      v: EXCHANGE_VERSION,
+      sessionId,
+      dealId,
+      seq: 1,
+      type: "commit",
+      actorRole: "seller",
+      actor: sellerName,
+      prevHash: GENESIS_PREV_HASH,
+      ts: now(),
+      data: {
+        plaintextRoot: enc.plaintextRoot,
+        ciphertextRoot: enc.ciphertextRoot,
+        dekCommit,
+        dekSalt: toB64url(dekSalt),
+        chunkCount: enc.chunkCount,
+        chunkSize: enc.chunkSize,
+        sizeBucket: enc.sizeBucket,
+        buyer: buyerName,
+      },
+    };
+    const committed = await createExchangeSession(seller, signInput(commitLeaf, sellerSigning));
+    if (!committed.ok) throw new Error(`seed exchange commit: ${committed.error}`);
+
+    // The seller hands the buyer the sealed chunks. In production these move
+    // off-platform; the demo carries them as an opaque, size-capped blob the
+    // server treats as bytes it cannot read.
+    const blob = await setDemoBlob(sessionId, seller.id, toB64url(enc.ciphertext));
+    if (!blob.ok) throw new Error(`seed exchange blob: ${blob.error}`);
+
+    let head = committed.value;
+    const ackLeaf: ExchangeLeaf = {
+      v: EXCHANGE_VERSION,
+      sessionId,
+      dealId,
+      seq: head.headSeq + 1,
+      type: "ciphertext_ack",
+      actorRole: "buyer",
+      actor: buyerName,
+      prevHash: head.headHash,
+      ts: now(),
+      data: { ciphertextRoot: enc.ciphertextRoot },
+    };
+    const acked = await appendExchangeEvent(buyer, sessionId, signInput(ackLeaf, buyerSigning));
+    if (!acked.ok) throw new Error(`seed exchange ciphertext_ack: ${acked.error}`);
+
+    head = acked.value;
+    const paySalt = new Uint8Array(randomBytes(16));
+    const payLeaf: ExchangeLeaf = {
+      v: EXCHANGE_VERSION,
+      sessionId,
+      dealId,
+      seq: head.headSeq + 1,
+      type: "payment_signaled",
+      actorRole: "buyer",
+      actor: buyerName,
+      prevHash: head.headHash,
+      ts: now(),
+      data: { paymentCommit: paymentCommitHex(paySalt, "wire ref demo-0001"), method: "wire" },
+    };
+    const paid = await appendExchangeEvent(buyer, sessionId, signInput(payLeaf, buyerSigning));
+    if (!paid.ok) throw new Error(`seed exchange payment_signaled: ${paid.error}`);
+    console.log(
+      `exchange: ${sessionId} on deal 0, seller @${sellerName} buyer @${buyerName}, ` +
+        `state ${paid.value.state} (seller reveals the DEK next)`,
+    );
   }
 
   // Transparency log checkpoints. Every consequential write above already

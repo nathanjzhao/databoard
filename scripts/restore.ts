@@ -30,6 +30,8 @@ const IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const KNOWN_ORDER = [
   "users",
   "user_e2ee_keys",
+  // user_signing_keys carries a FOREIGN KEY to users(id); load after users.
+  "user_signing_keys",
   "sessions",
   "rate_limits",
   "operators",
@@ -44,6 +46,15 @@ const KNOWN_ORDER = [
   "deals",
   "deal_participants",
   "deal_close_dates",
+  // deal_receipt_signatures -> deals(id), users(id); after both are loaded.
+  "deal_receipt_signatures",
+  // The dataset exchange. exchange_events carries a FOREIGN KEY to
+  // exchange_sessions(id) (and both to deals/users), so sessions must load
+  // before events; without this pair they sort into the alphabetical "rest"
+  // tail where exchange_events precedes exchange_sessions and the restore
+  // trips the FK.
+  "exchange_sessions",
+  "exchange_events",
   "ops_errors",
   // The transparency log. translog_leaves is the parent; translog_events
   // carries a FOREIGN KEY to translog_leaves(seq), so leaves must load first.

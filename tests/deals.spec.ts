@@ -998,7 +998,10 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     "collab_requests",
     "deal_close_dates",
     "deal_participants",
+    "deal_receipt_signatures",
     "deals",
+    "exchange_events",
+    "exchange_sessions",
     "hidden_asks",
     "invite_edges",
     "invites",
@@ -1017,6 +1020,7 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     "translog_heads",
     "translog_leaves",
     "user_e2ee_keys",
+    "user_signing_keys",
     "users",
   ]);
 

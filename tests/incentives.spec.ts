@@ -728,14 +728,17 @@ test("D /api/admin/signals returns the three ranked lists to an operator and den
 
 /* ------------------------------------------------------------- PRIVACY */
 
-test("PRIVACY no new tables; receipts and signals carry only buckets and public handles", async () => {
-  // No feature here added a table: the live schema is exactly the committed one,
-  // and nothing named like receipts or signals exists.
+test("PRIVACY new tables are metadata-only; receipts and signals carry only buckets and public handles", async () => {
+  // Every live table is declared in the committed db/schema.sql. The party-
+  // signature and exchange features DID add tables (deal_receipt_signatures,
+  // user_signing_keys, exchange_sessions, exchange_events), so this no longer
+  // forbids a "receipt"/"signal" name outright; instead it proves those tables
+  // are metadata-only: public key material, signatures and hashed commitments,
+  // never a raw amount, a real name, or a contact.
   const c = db();
   const liveRs = await c.execute(
     `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`,
   );
-  c.close();
   const live = new Set(liveRs.rows.map((r) => String(r.name)));
   const fs = await import("node:fs/promises");
   const schemaSql = await fs.readFile(path.join(ROOT, "db", "schema.sql"), "utf8");
@@ -744,8 +747,24 @@ test("PRIVACY no new tables; receipts and signals carry only buckets and public 
   );
   for (const name of live) {
     expect(declared.has(name), `unexpected table "${name}" not in db/schema.sql`).toBe(true);
-    expect(name).not.toMatch(/receipt|signal/i);
   }
+  // The tables the new features added hold no PII and no raw amount: scan every
+  // value in each for the deal totals and the identities this suite created.
+  const forbidden = [DEAL_L.total, DEAL_M.total, REC.realName, REC.contact];
+  for (const table of [
+    "deal_receipt_signatures",
+    "user_signing_keys",
+    "exchange_sessions",
+    "exchange_events",
+  ]) {
+    if (!live.has(table)) continue;
+    const rs = await c.execute(`SELECT * FROM "${table}"`);
+    const dump = JSON.stringify(rs.rows);
+    for (const marker of forbidden) {
+      expect(dump.includes(marker), `"${marker}" persisted in ${table}`).toBe(false);
+    }
+  }
+  c.close();
 
   // The receipts surface exposes the bucket, never the exact total, and no PII.
   await logIn(page, REC.handle);

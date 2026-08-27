@@ -69,8 +69,10 @@ import {
   provenanceLine,
   certificateDate,
   CERTIFICATE_DISPUTE_WINDOW_DAYS,
+  partyBaseFieldsFromPayload,
   type ReceiptPayload,
 } from "../lib/receipts";
+import { verifyAttestation, partySigningBase } from "../lib/receipt-attest";
 import {
   recordingCreditBps,
   netAccrualCents,
@@ -857,6 +859,73 @@ test("INC-3 the engagement certificate is offered on a co-attested deal and refu
   await expect(page.getByText("solo deal").first()).toBeVisible();
   await expect(page.getByText("Portable receipt · engagement certificate")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Show token" })).toHaveCount(0);
+});
+
+test("PARTY REC party-signs DEAL_M's receipt with their own key; the sig binds and the directory matches", async ({
+  request,
+}) => {
+  // REC (still logged in) opens the co-attested deal. The party-signature
+  // panel is present with both confirmed parties on the roster, none signed.
+  await page.goto(`/deals/${dealMId}`);
+  await expect(page.getByText("Party signatures").first()).toBeVisible();
+  await expect(page.getByText("0 of 2 signed")).toBeVisible();
+
+  // REC signs with their own key (derived at login, held in this tab).
+  const signBtn = page.getByRole("button", { name: "Sign this receipt with your key" });
+  await expect(signBtn).toBeVisible();
+  const [signRes] = await Promise.all([
+    page.waitForResponse(
+      (r) => r.url().includes("/receipt-sign") && r.request().method() === "POST",
+    ),
+    signBtn.click(),
+  ]);
+  expect(signRes.status(), "receipt-sign POST").toBe(200);
+  await expect(page.getByText("You have signed this receipt.")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("1 of 2 signed")).toBeVisible();
+
+  // The receipt token now carries REC's party signature. Read it back and
+  // verify it end to end through the public endpoint.
+  await page.getByRole("button", { name: "Show token" }).click();
+  const token = (
+    await page.getByText(new RegExp(`^${RECEIPT_PREFIX}\\.`)).first().innerText()
+  ).trim();
+  const vr = await request.post("/api/receipts/verify", { data: { token } });
+  expect(vr.status()).toBe(200);
+  const body = (await vr.json()) as { valid: boolean; receipt: ReceiptPayload };
+  expect(body.valid).toBe(true);
+  expect(body.receipt.attest, "receipt carries the attestation block").toBeTruthy();
+
+  const roster = body.receipt.attest!.signers.map((s) => s.handle).sort();
+  expect(roster).toEqual([PART.handle, REC.handle].sort());
+  const signedHandles = body.receipt.attest!.sigs.map((s) => s.handle);
+  expect(signedHandles).toContain(REC.handle); // REC signed
+  expect(signedHandles).not.toContain(PART.handle); // PART has not yet
+
+  // The party signature verifies over the recomputed canonical base, and only
+  // REC's handle is valid: this is the operator-unforgeable layer.
+  const fields = partyBaseFieldsFromPayload(body.receipt)!;
+  const ver = verifyAttestation(fields, body.receipt.attest!.sigs);
+  expect(ver.valid).toEqual([REC.handle]);
+  expect(ver.allSigned).toBe(false); // PART still owes a signature
+
+  // The public signing directory serves REC's registered key, and it is the
+  // exact pubkey the receipt's roster carries: the verifier's directory check.
+  const dir = await request.get(`/api/signing/pubkey?handle=${REC.handle}`);
+  const { pubkey } = (await dir.json()) as { pubkey: string };
+  expect(pubkey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  const recSigner = body.receipt.attest!.signers.find((s) => s.handle === REC.handle)!;
+  expect(pubkey).toBe(recSigner.pubkey);
+
+  // COUNTERFACTUAL: a signature checked against a tampered base (one field
+  // changed) must fail, so the guard is not vacuously true.
+  const tamperedBase = partySigningBase({ ...fields, seq: fields.seq + 1 });
+  const recSig = body.receipt.attest!.sigs.find((s) => s.handle === REC.handle)!.sig;
+  const badVer = verifyAttestation(
+    { ...fields, seq: fields.seq + 1, signers: fields.signers },
+    [{ handle: REC.handle, sig: recSig }],
+  );
+  expect(badVer.valid, "sig over the real base does not verify over a tampered base").toEqual([]);
+  void tamperedBase;
 });
 
 test("INC-4 the leaderboard defaults to value-to-others, not value-to-self", async () => {
