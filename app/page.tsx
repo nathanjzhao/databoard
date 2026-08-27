@@ -19,11 +19,14 @@ import {
   ModalityTags,
   StatusMark,
   SupplyMeter,
+  TrackRecordChip,
 } from "@/components/ask/meta";
 import { timeAgo } from "@/components/ask/format";
 import { TermsChip } from "@/components/ask/terms";
 import { getSessionUser } from "@/lib/auth";
 import { getDb, isDbConfigured } from "@/lib/db";
+import { recordedVolumeByUser } from "@/lib/stats";
+import { comparePriority, recordedVolumeChip } from "@/lib/matching";
 import { ASK_STATUSES, CATEGORIES, unpackTags, type AskStatus } from "@/lib/taxonomy";
 import { isExclusivity, type Exclusivity } from "@/lib/terms";
 
@@ -41,6 +44,7 @@ type AskRow = {
   buyer_is_other: number;
   status: AskStatus;
   created_at: number;
+  poster_id: string;
   username: string;
   has_mandate: number;
   exclusivity: Exclusivity | null;
@@ -78,7 +82,8 @@ async function loadBoard(cat: string, status: string) {
     db.execute({
       sql: `SELECT a.id, a.title, a.category, a.modality_tags, a.volume,
                    a.price_band, a.supply_filled_pct, a.buyer_token,
-                   a.buyer_is_other, a.status, a.created_at, u.username,
+                   a.buyer_is_other, a.status, a.created_at,
+                   a.user_id AS poster_id, u.username,
                    EXISTS(SELECT 1 FROM ask_mandates m WHERE m.ask_id = a.id)
                      AS has_mandate,
                    t.exclusivity
@@ -106,6 +111,7 @@ async function loadBoard(cat: string, status: string) {
     buyer_is_other: Number(r.buyer_is_other),
     status: (STATUS_SET.has(String(r.status)) ? String(r.status) : "open") as AskStatus,
     created_at: Number(r.created_at),
+    poster_id: String(r.poster_id),
     username: String(r.username),
     has_mandate: Number(r.has_mandate),
     exclusivity: isExclusivity(r.exclusivity) ? r.exclusivity : null,
@@ -150,6 +156,23 @@ export default async function BoardPage({
 
   const board = await loadBoard(cat, status);
   const nowMs = Date.now();
+
+  // Recorded-volume priority: look up each poster's confirmed co-attested
+  // volume once, then reorder the already-fetched rows as a SECONDARY sort
+  // after recency (comparePriority buckets recency and keeps it dominant, so a
+  // record-empty poster still appears, just lower inside its own window). Exact
+  // figures stay here; only the bucketed chip is ever rendered.
+  const volumes = await recordedVolumeByUser([
+    ...new Set(board.asks.map((a) => a.poster_id)),
+  ]);
+  const priorityOf = (a: AskRow) => ({
+    createdAt: a.created_at,
+    volumeUsd: volumes.get(a.poster_id)?.volumeUsd ?? 0,
+    evidenceBackedDeals: volumes.get(a.poster_id)?.evidenceBackedDeals ?? 0,
+  });
+  const asks = [...board.asks].sort((a, b) =>
+    comparePriority(priorityOf(a), priorityOf(b), nowMs),
+  );
 
   return (
     <div className="mx-auto w-full max-w-[1180px] px-5 py-12">
@@ -216,7 +239,7 @@ export default async function BoardPage({
       </div>
 
       {/* --------------------------------------------------------- ledger */}
-      {board.asks.length === 0 ? (
+      {asks.length === 0 ? (
         <div className="relative mt-8 overflow-hidden border border-rule bg-panel px-6 py-16 text-center">
           <div className="bt-hatch pointer-events-none absolute inset-0 opacity-40" />
           <div className="relative">
@@ -247,8 +270,11 @@ export default async function BoardPage({
           </div>
 
           <ul className="divide-y divide-rule">
-            {board.asks.map((a) => {
+            {asks.map((a) => {
               const closed = a.status === "closed";
+              const trackChip = recordedVolumeChip(
+                volumes.get(a.poster_id)?.volumeUsd ?? 0,
+              );
               return (
                 <li key={a.id} className="relative">
                   <Link
@@ -275,6 +301,7 @@ export default async function BoardPage({
                         <ModalityTags tags={unpackTags(a.modality_tags)} dim={closed} />
                         <TermsChip exclusivity={a.exclusivity} dim={closed} />
                         {a.has_mandate === 1 ? <MandateMark dim={closed} /> : null}
+                        <TrackRecordChip chip={trackChip} dim={closed} />
                         <span className="font-mono text-[0.6875rem] text-ink-ghost">
                           @{a.username} · {timeAgo(a.created_at, nowMs)}
                         </span>

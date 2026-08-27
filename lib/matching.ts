@@ -28,6 +28,103 @@ import { getDb, now } from "./db.ts";
 import { newId } from "./crypto.ts";
 import { unpackTags, type AskStatus } from "./taxonomy.ts";
 import { isExclusivity, type Exclusivity } from "./terms.ts";
+import { recordedVolumeByUser } from "./stats.ts";
+import { usdRounded10k } from "../components/deals/format.ts";
+
+/* ------------------------------------------------ recorded-volume priority
+ *
+ * The bribe that makes being on the record worth its fee: an account's
+ * confirmed, co-attested recorded volume raises the visibility of its asks on
+ * the board and its position in others' match lists. This is a SECONDARY sort
+ * applied AFTER recency, never a replacement for it. Recency is bucketed to a
+ * window and stays the dominant key; within one window, recorded volume lifts
+ * an ask; exact createdAt is the final, stable tiebreak. A brand-new or
+ * record-empty account still appears, just lower inside its own window, never
+ * buried under older ones.
+ *
+ * The volume that moves a bucket is exactly the volume that accrues the
+ * referral fee (lib/stats.ts recordedVolumeByUser shares the fee predicate),
+ * so buying priority means paying. Exact figures never leave the server: only
+ * the coarse bucket (a chip, or a sort position) is ever exposed.
+ */
+
+/**
+ * Dollar thresholds separating recorded-volume buckets, aligned to the public
+ * $10k rounding. Coarse on purpose: crossing one takes real recorded volume.
+ */
+export const RECORDED_VOLUME_BUCKETS = [
+  10_000, 50_000, 250_000, 1_000_000,
+] as const;
+
+/** How long one recency window is. Recency dominates at this granularity. */
+export const PRIORITY_RECENCY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Bucket 0..N for a recorded attested volume. 0 means record-empty (<$10k). */
+export function recordedVolumeBucket(volumeUsd: number): number {
+  let b = 0;
+  for (const threshold of RECORDED_VOLUME_BUCKETS) {
+    if (volumeUsd >= threshold) b += 1;
+  }
+  return b;
+}
+
+/**
+ * The bucketed track-record chip a poster wears, or null below the first
+ * threshold: a record-empty poster wears nothing. Never the exact figure;
+ * always the floor of the account's bucket with a "+", e.g. "$250k+".
+ */
+export function recordedVolumeChip(volumeUsd: number): string | null {
+  const b = recordedVolumeBucket(volumeUsd);
+  if (b === 0) return null;
+  return `${usdRounded10k(RECORDED_VOLUME_BUCKETS[b - 1])}+`;
+}
+
+/** Age in whole recency windows: 0 = current window (newest), larger = older. */
+export function recencyBucket(createdAt: number, nowMs: number): number {
+  return Math.max(0, Math.floor((nowMs - createdAt) / PRIORITY_RECENCY_WINDOW_MS));
+}
+
+/**
+ * Effective track-record bucket: the volume bucket, lifted one rung when the
+ * account has committed evidence on a co-attested deal (the strictly
+ * harder-to-fake tier, the "tier mix" factor). A record-empty account is never
+ * lifted, so evidence can only sharpen a ranking that recorded volume already
+ * earned.
+ */
+export function trackRecordBucket(
+  volumeUsd: number,
+  evidenceBackedDeals: number,
+): number {
+  const base = recordedVolumeBucket(volumeUsd);
+  const lifted = base > 0 && evidenceBackedDeals > 0 ? base + 1 : base;
+  return Math.min(lifted, RECORDED_VOLUME_BUCKETS.length + 1);
+}
+
+/** What the priority comparator needs about one ask. */
+export type PriorityInput = {
+  createdAt: number;
+  volumeUsd: number;
+  evidenceBackedDeals: number;
+};
+
+/**
+ * Secondary sort AFTER recency. Returns < 0 when a should sort before b.
+ * Recency window is primary (newer first); within a window, higher track record
+ * first; exact createdAt breaks the rest so the order is total and stable.
+ */
+export function comparePriority(
+  a: PriorityInput,
+  b: PriorityInput,
+  nowMs: number,
+): number {
+  const ra = recencyBucket(a.createdAt, nowMs);
+  const rb = recencyBucket(b.createdAt, nowMs);
+  if (ra !== rb) return ra - rb;
+  const ta = trackRecordBucket(a.volumeUsd, a.evidenceBackedDeals);
+  const tb = trackRecordBucket(b.volumeUsd, b.evidenceBackedDeals);
+  if (ta !== tb) return tb - ta;
+  return b.createdAt - a.createdAt;
+}
 
 /* ------------------------------------------------------------- matching */
 
@@ -48,6 +145,8 @@ export type MatchedAsk = {
   posterUsername: string;
   /** Stated terms (ask_terms); null for asks that predate them. */
   exclusivity: Exclusivity | null;
+  /** Poster's bucketed recorded-volume chip ("$250k+"), or null if record-empty. */
+  trackRecordChip: string | null;
 };
 
 /** The viewer's own ask, reduced to what the comparison needs. */
@@ -131,6 +230,7 @@ export async function findBuyerMatches(userId: string): Promise<BuyerMatchGroup[
       posterId: String(r.poster_id),
       posterUsername: String(r.poster_username),
       exclusivity: isExclusivity(r.exclusivity) ? r.exclusivity : null,
+      trackRecordChip: null,
     });
   }
 
@@ -158,10 +258,40 @@ export async function findBuyerMatches(userId: string): Promise<BuyerMatchGroup[
     });
   }
 
-  // Newest matched ask first decides group order.
-  return [...groups.values()].sort(
-    (a, b) => (b.otherAsks[0]?.createdAt ?? 0) - (a.otherAsks[0]?.createdAt ?? 0),
-  );
+  // Recorded-volume priority, applied as a secondary sort after recency. Look
+  // up every matched poster's recorded attested volume once, stamp each ask
+  // with its bucketed chip (exact figures never leave here), then order asks
+  // within each group and the groups themselves by the same priority key.
+  const posterIds = [
+    ...new Set(
+      [...groups.values()].flatMap((g) => g.otherAsks.map((a) => a.posterId)),
+    ),
+  ];
+  const volumes = await recordedVolumeByUser(posterIds);
+  const nowMs = now();
+  const priorityOf = (a: MatchedAsk): PriorityInput => {
+    const v = volumes.get(a.posterId);
+    return {
+      createdAt: a.createdAt,
+      volumeUsd: v?.volumeUsd ?? 0,
+      evidenceBackedDeals: v?.evidenceBackedDeals ?? 0,
+    };
+  };
+  for (const g of groups.values()) {
+    for (const a of g.otherAsks) {
+      a.trackRecordChip = recordedVolumeChip(volumes.get(a.posterId)?.volumeUsd ?? 0);
+    }
+    g.otherAsks.sort((a, b) => comparePriority(priorityOf(a), priorityOf(b), nowMs));
+  }
+
+  // Group order follows each group's top-priority ask, so a group led by a
+  // high-track-record ask surfaces above one led by an older or record-empty one.
+  return [...groups.values()].sort((a, b) => {
+    const ta = a.otherAsks[0];
+    const tb = b.otherAsks[0];
+    if (!ta || !tb) return (tb ? 1 : 0) - (ta ? 1 : 0);
+    return comparePriority(priorityOf(ta), priorityOf(tb), nowMs);
+  });
 }
 
 /** How many live asks by others currently share a buyer token with the viewer. */

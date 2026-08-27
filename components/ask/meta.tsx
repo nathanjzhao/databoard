@@ -133,6 +133,37 @@ export function MandateMark({ dim = false }: { dim?: boolean }) {
   );
 }
 
+/* ------------------------------------------------------- track record */
+
+/**
+ * A small chip on an ask whose poster has confirmed, co-attested recorded
+ * volume. The value is bucketed (a floor with a "+", e.g. "$250k+") and never
+ * the exact figure; the bucket is computed server-side in lib/matching.ts and
+ * only the string reaches here. It is the visible half of the recording
+ * incentive: recorded volume both lifts an ask's position and earns this mark.
+ */
+export function TrackRecordChip({
+  chip,
+  dim = false,
+}: {
+  chip: string | null;
+  dim?: boolean;
+}) {
+  if (!chip) return null;
+  return (
+    <span
+      className={[
+        "inline-flex items-baseline gap-1 border px-1.5 py-0.5 font-mono text-[0.5625rem] uppercase tracking-[0.1em]",
+        dim ? "border-rule text-ink-ghost" : "border-rule-strong text-ink-faint",
+      ].join(" ")}
+      title="Track record: the poster's confirmed, co-attested recorded deal volume, bucketed and never exact. It lifts where their asks appear."
+    >
+      <span>rec</span>
+      <span className={dim ? "text-ink-ghost" : "text-ink-dim"}>{chip}</span>
+    </span>
+  );
+}
+
 /* ---------------------------------------------------------- status mark */
 
 const STATUS_STYLE: Record<AskStatus, { dot: string; text: string }> = {

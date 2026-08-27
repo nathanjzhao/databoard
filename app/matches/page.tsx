@@ -23,6 +23,7 @@ import { CollabInbox } from "@/components/matches/collab-inbox";
 import { ProposeCollab } from "@/components/matches/propose-collab";
 import { ProposePooling } from "@/components/matches/propose-pooling";
 import { TermsChip } from "@/components/ask/terms";
+import { TrackRecordChip } from "@/components/ask/meta";
 import { timeAgo } from "@/components/matches/format";
 import { getSessionUser } from "@/lib/auth";
 import { isDbConfigured } from "@/lib/db";
@@ -446,6 +447,7 @@ function MatchedAskRow({
         <span className="font-mono text-[0.75rem] text-ink-dim">
           @{ask.posterUsername}
         </span>
+        <TrackRecordChip chip={ask.trackRecordChip} />
         <span className="ml-auto bt-label">{timeAgo(ask.createdAt)}</span>
       </div>
 
