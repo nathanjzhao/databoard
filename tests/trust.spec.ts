@@ -173,7 +173,7 @@ async function logIn(p: Page, username: string, password: string) {
   // a wall-clock URL change, then make sure we are on the board (navigating
   // ourselves if the client's own redirect is still catching up).
   await p
-    .waitForResponse((r) => r.url().includes("/api/e2ee/pubkey"), { timeout: 60000 })
+    .waitForResponse((r) => r.url().includes("/api/e2ee/pubkey"), { timeout: 45000 })
     .catch(() => {});
   await p
     .waitForURL((u) => u.pathname === "/", { timeout: 15000 })
@@ -286,6 +286,14 @@ async function askCountByTitle(title: string): Promise<number> {
 /* --------------------------------------------------------------- fixture */
 
 test.describe.configure({ mode: "serial" });
+
+// This suite runs real cryptography per step (scrypt N=2^15 key derivation,
+// X25519, RFC 9497 VOPRF). On a loaded shared CI runner that is genuinely
+// slow, so give each test more than the default 90s rather than papering over
+// it with retries, which a serial stateful suite cannot take safely.
+test.beforeEach(() => {
+  test.setTimeout(180_000);
+});
 
 test.beforeAll(async ({ browser }) => {
   await fs.mkdir(VERIFY_DIR, { recursive: true });
