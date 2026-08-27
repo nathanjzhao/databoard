@@ -116,6 +116,16 @@ async function signUp(
     password: string;
   },
 ) {
+  // Late in the full serial suite the per-IP signup limits have accumulated
+  // from every prior spec; clear them so this crypto suite is not refused.
+  const rl = createClient({ url: `file:${DB_PATH}` });
+  try {
+    await rl.execute("DELETE FROM rate_limits");
+  } catch {
+    /* nothing to clear */
+  } finally {
+    rl.close();
+  }
   await p.goto("/signup");
   await expect(p.getByText("Say who you are, once")).toBeVisible();
 
@@ -163,6 +173,20 @@ async function signOut(p: Page) {
 }
 
 async function logIn(p: Page, username: string, password: string) {
+  // Every spec logs into the shared seeded accounts, so by the time this
+  // suite runs the login-per-handle rate limit (10 / 5 min, a real product
+  // guard) is already tripped for names like quiet-ledger and the login
+  // would be refused to the gate. Clear the limiter first: it is exactly
+  // what the hardening suite does around its own hammers, and the privacy
+  // dump later asserts rate_limits holds no PII regardless.
+  const rl = createClient({ url: `file:${DB_PATH}` });
+  try {
+    await rl.execute("DELETE FROM rate_limits");
+  } catch {
+    /* table may not exist yet on a bare DB; nothing to clear */
+  } finally {
+    rl.close();
+  }
   await p.goto("/login");
   await p.getByLabel("Handle").fill(username);
   await p.getByLabel("Password").fill(password);
