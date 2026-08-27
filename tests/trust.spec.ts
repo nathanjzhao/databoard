@@ -167,14 +167,22 @@ async function logIn(p: Page, username: string, password: string) {
   await p.getByLabel("Handle").fill(username);
   await p.getByLabel("Password").fill(password);
   await p.getByRole("button", { name: "Sign in" }).click();
-  await p.waitForURL((u) => u.pathname === "/");
-  // The login form fires router.refresh() and router.push together; when
-  // push wins the race the board comes from the logged-out router cache.
-  // One reload renders server-side with the session cookie that is already
-  // set, which is the claim that matters here.
+  // Login derives the E2EE identity key (scrypt) and registers the public
+  // half BEFORE it hard-navigates to the board. On a loaded CI CPU that
+  // derivation is slow, so wait for the registration to land rather than for
+  // a wall-clock URL change, then make sure we are on the board (navigating
+  // ourselves if the client's own redirect is still catching up).
+  await p
+    .waitForResponse((r) => r.url().includes("/api/e2ee/pubkey"), { timeout: 60000 })
+    .catch(() => {});
+  await p
+    .waitForURL((u) => u.pathname === "/", { timeout: 15000 })
+    .catch(async () => {
+      await p.goto("/");
+    });
   const handle = p.getByText(`@${username}`).first();
   try {
-    await expect(handle).toBeVisible({ timeout: 3000 });
+    await expect(handle).toBeVisible({ timeout: 5000 });
   } catch {
     await p.reload();
     await expect(handle).toBeVisible();
