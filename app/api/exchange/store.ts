@@ -32,13 +32,20 @@ import {
   isSessionId,
   isSigningPubkey,
   isValidLeafData,
+  isValidWireData,
   resolveTransition,
+  resolveWireTransition,
   verifyLeafSignature,
+  wireStatusFrom,
   type ExchangeLeaf,
   type ExchangeRole,
   type ExchangeState,
   type ExchangeEventType,
   type StoredEvent,
+  type StoredWireEvent,
+  type WireClaimLeaf,
+  type WireClaimType,
+  type WireStatus,
 } from "../../../lib/exchange.ts";
 import type { SessionView } from "../../../components/exchange/types.ts";
 
@@ -63,10 +70,12 @@ export type ExchangeError =
   | "bad_session_id"
   | "session_exists"
   | "bad_leaf"
+  | "bad_wire"
   | "bad_signature"
   | "chain_conflict"
   | "illegal_transition"
   | "commitment_mismatch"
+  | "wire_not_observed"
   | "wrong_signer"
   | "not_found"
   | "terminal";
@@ -88,6 +97,7 @@ export function httpStatusFor(error: ExchangeError): number {
       return 404;
     case "session_exists":
     case "chain_conflict":
+    case "wire_not_observed":
     case "terminal":
       return 409;
     case "not_confirmed":
@@ -193,6 +203,43 @@ async function loadEvents(db: Client, sessionId: string): Promise<StoredEvent[]>
   });
 }
 
+async function loadWireEvents(db: Client, sessionId: string): Promise<StoredWireEvent[]> {
+  const rs = await db.execute({
+    sql: `SELECT seq, type, actor_role, actor_user_id, prev_hash, payload_json,
+                 event_hash, signer_pubkey, signature
+            FROM exchange_wire_claims WHERE session_id = ? ORDER BY seq ASC`,
+    args: [sessionId],
+  });
+  return rs.rows.map((r) => {
+    const leaf = JSON.parse(String(r.payload_json)) as WireClaimLeaf;
+    return {
+      seq: Number(r.seq),
+      type: String(r.type) as WireClaimType,
+      actorRole: String(r.actor_role) as ExchangeRole,
+      actor: leaf.actor,
+      prevHash: String(r.prev_hash),
+      ts: leaf.ts,
+      data: leaf.data,
+      eventHash: String(r.event_hash),
+      signerPubkey: String(r.signer_pubkey),
+      signature: String(r.signature),
+    };
+  });
+}
+
+/** The N15 wire reference the seller committed in the genesis commit, or null (legacy). */
+function n15FromEvents(events: StoredEvent[]): string | null {
+  const commit = events.find((e) => e.type === "commit");
+  const n15 = commit?.data?.n15;
+  return typeof n15 === "string" && n15.length > 0 ? n15 : null;
+}
+
+/** The payment_signaled event's hash: the anchor the wire claim chain hangs off. */
+function paymentSignaledHash(events: StoredEvent[]): string | null {
+  const pay = events.find((e) => e.type === "payment_signaled");
+  return pay ? pay.eventHash : null;
+}
+
 async function buildView(db: Client, s: SessionRow, viewerId: string): Promise<SessionView | null> {
   const role: ExchangeRole | null =
     viewerId === s.seller_user_id ? "seller" : viewerId === s.buyer_user_id ? "buyer" : null;
@@ -201,7 +248,10 @@ async function buildView(db: Client, s: SessionRow, viewerId: string): Promise<S
     usernameOf(db, s.seller_user_id),
     usernameOf(db, s.buyer_user_id),
   ]);
-  const events = await loadEvents(db, s.id);
+  const [events, wireEvents] = await Promise.all([
+    loadEvents(db, s.id),
+    loadWireEvents(db, s.id),
+  ]);
   return {
     id: s.id,
     dealId: s.deal_id,
@@ -222,6 +272,10 @@ async function buildView(db: Client, s: SessionRow, viewerId: string): Promise<S
     hasDemoBlob: s.demo_ciphertext != null,
     demoBlobLen: s.demo_ciphertext ? s.demo_ciphertext.length : 0,
     events,
+    n15: n15FromEvents(events),
+    wireStatus: wireStatusFrom(wireEvents),
+    wireAnchorHash: paymentSignaledHash(events),
+    wireEvents,
     createdAt: s.created_at,
     updatedAt: s.updated_at,
   };
@@ -449,6 +503,17 @@ export async function appendExchangeEvent(
         ? err("terminal")
         : err("illegal_transition", transition.error);
     }
+    // The pay-step gate (Feature 1): the seller may only reveal the key once the
+    // WireCreditClaim reached wire_credit_observed (a countersigned, un-reversed
+    // credit). Before that, the payment is at most the buyer's sent-commit, which
+    // is not enough to release the data.
+    if (leaf.type === "dek_revealed") {
+      const wireEvents = await loadWireEventsTx(tx, sessionId);
+      if (wireStatusFrom(wireEvents) !== "observed") {
+        await tx.rollback();
+        return err("wire_not_observed", "reveal is gated on a countersigned wire-credit observation");
+      }
+    }
     // Pinned-key rule: a role signs every step with the key it first used.
     if (role === "seller") {
       if (input.signerPubkey !== cur.seller_signing_pubkey) {
@@ -524,6 +589,262 @@ async function insertEvent(
       now(),
     ],
   });
+}
+
+/* ------------------------------------------------------- wire credit claim */
+
+/** Shape-check a posted WireCreditClaim leaf against a role and its identity. */
+function wireLeafShapeOk(
+  leaf: unknown,
+  expect: { sessionId: string; dealId: string; actor: string; role: ExchangeRole },
+): leaf is WireClaimLeaf {
+  if (leaf === null || typeof leaf !== "object") return false;
+  const l = leaf as Record<string, unknown>;
+  if (l.v !== EXCHANGE_VERSION) return false;
+  if (!isSessionId(l.sessionId) || l.sessionId !== expect.sessionId) return false;
+  if (typeof l.dealId !== "string" || l.dealId !== expect.dealId) return false;
+  if (typeof l.seq !== "number" || !Number.isInteger(l.seq) || l.seq < 1) return false;
+  if (
+    l.type !== "wire_credit_claim" &&
+    l.type !== "wire_credit_countersign" &&
+    l.type !== "wire_reversed"
+  ) {
+    return false;
+  }
+  if (l.actorRole !== expect.role) return false;
+  if (l.actor !== expect.actor) return false;
+  if (typeof l.prevHash !== "string") return false;
+  if (typeof l.ts !== "number") return false;
+  if (!isValidWireData(l.type as WireClaimType, l.data)) return false;
+  return true;
+}
+
+async function loadWireEventsTx(tx: TxLike, sessionId: string): Promise<StoredWireEvent[]> {
+  const rs = await tx.execute({
+    sql: `SELECT seq, type, actor_role, actor_user_id, prev_hash, payload_json,
+                 event_hash, signer_pubkey, signature
+            FROM exchange_wire_claims WHERE session_id = ? ORDER BY seq ASC`,
+    args: [sessionId],
+  });
+  return (rs.rows as Record<string, unknown>[]).map((r) => {
+    const leaf = JSON.parse(String(r.payload_json)) as WireClaimLeaf;
+    return {
+      seq: Number(r.seq),
+      type: String(r.type) as WireClaimType,
+      actorRole: String(r.actor_role) as ExchangeRole,
+      actor: leaf.actor,
+      prevHash: String(r.prev_hash),
+      ts: leaf.ts,
+      data: leaf.data,
+      eventHash: String(r.event_hash),
+      signerPubkey: String(r.signer_pubkey),
+      signature: String(r.signature),
+    };
+  });
+}
+
+/** The payment_signaled event's hash inside the write lock: the wire anchor. */
+async function paymentSignaledHashTx(tx: TxLike, sessionId: string): Promise<string | null> {
+  const rs = await tx.execute({
+    sql: `SELECT event_hash FROM exchange_events
+           WHERE session_id = ? AND type = 'payment_signaled'
+           ORDER BY seq DESC LIMIT 1`,
+    args: [sessionId],
+  });
+  const row = rs.rows[0] as Record<string, unknown> | undefined;
+  return row ? String(row.event_hash) : null;
+}
+
+/** The N15 reference the seller committed in the genesis commit, inside the lock. */
+async function sessionN15Tx(tx: TxLike, sessionId: string): Promise<string | null> {
+  const rs = await tx.execute({
+    sql: `SELECT payload_json FROM exchange_events WHERE session_id = ? AND seq = 1`,
+    args: [sessionId],
+  });
+  const row = rs.rows[0] as Record<string, unknown> | undefined;
+  if (!row) return null;
+  try {
+    const leaf = JSON.parse(String(row.payload_json)) as WireClaimLeaf;
+    const n15 = leaf.data?.n15;
+    return typeof n15 === "string" && n15.length > 0 ? n15 : null;
+  } catch {
+    return null;
+  }
+}
+
+async function insertWireEvent(
+  tx: TxLike,
+  sessionId: string,
+  actorUserId: string,
+  input: SignedEventInput,
+): Promise<void> {
+  const leaf = input.leaf;
+  await tx.execute({
+    sql: `INSERT INTO exchange_wire_claims
+            (session_id, seq, type, actor_role, actor_user_id, prev_hash,
+             payload_json, event_hash, signer_pubkey, signature, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [
+      sessionId,
+      leaf.seq,
+      leaf.type,
+      leaf.actorRole,
+      actorUserId,
+      leaf.prevHash,
+      JSON.stringify(leaf),
+      input.eventHash,
+      input.signerPubkey,
+      input.signature,
+      now(),
+    ],
+  });
+}
+
+/**
+ * Append the next WireCreditClaim step (Feature 1). It is the payment phase of
+ * the exchange, three-party and mutually signed: the seller claims an observed
+ * inbound credit, the buyer countersigns, and only then (see the dek_revealed
+ * gate in appendExchangeEvent) may the seller release the key. A later
+ * wire_reversed reopens the deal. Everything is re-verified server-side: the
+ * leaf's identity and shape, its Ed25519 signature, its place in the wire chain
+ * (anchored to the payment_signaled event), the N15 and claim-hash bindings, the
+ * wire sub-state transition for the acting role, and the pinned-key rule. The
+ * server stores commitments and signatures only, never the bank record.
+ */
+export async function appendWireClaim(
+  user: { id: string; username: string },
+  sessionId: string,
+  input: SignedEventInput,
+): Promise<Result<SessionView>> {
+  const db = await getDb();
+  const pre = await loadSession(db, sessionId);
+  if (!pre) return err("not_found");
+  const role: ExchangeRole | null =
+    user.id === pre.seller_user_id ? "seller" : user.id === pre.buyer_user_id ? "buyer" : null;
+  if (!role) return err("not_participant");
+
+  const raw: unknown = input.leaf;
+  if (!wireLeafShapeOk(raw, { sessionId, dealId: pre.deal_id, actor: user.username, role })) {
+    return err("bad_wire");
+  }
+  const leaf = raw;
+  if (!signatureOk(input)) return err("bad_signature");
+
+  const registered = await registeredSigningKey(db, user.id);
+  if (registered && registered !== input.signerPubkey) {
+    return err("wrong_signer", "not signed with your registered signing key");
+  }
+
+  const t = now();
+  const tx = await db.transaction("write");
+  try {
+    const cur = await loadSessionTx(tx, sessionId);
+    if (!cur) {
+      await tx.rollback();
+      return err("not_found");
+    }
+
+    const anchor = await paymentSignaledHashTx(tx, sessionId);
+    if (!anchor) {
+      await tx.rollback();
+      return err("illegal_transition", "no payment has been sent to claim against");
+    }
+    // Claim and countersign run in the payment phase; a reversal is legal later
+    // too (a credit can be clawed back after delivery), but only once observed.
+    if (leaf.type === "wire_reversed") {
+      if (
+        cur.state !== "payment_signaled" &&
+        cur.state !== "dek_revealed" &&
+        cur.state !== "completed"
+      ) {
+        await tx.rollback();
+        return err("illegal_transition", "nothing to reverse in this state");
+      }
+    } else if (cur.state !== "payment_signaled") {
+      await tx.rollback();
+      return err("illegal_transition", "wire steps run in the payment phase");
+    }
+
+    const wireEvents = await loadWireEventsTx(tx, sessionId);
+    const status = wireStatusFrom(wireEvents);
+    const transition = resolveWireTransition(status, leaf.type, role);
+    if (!transition.ok) {
+      await tx.rollback();
+      return transition.error === "wrong_role"
+        ? err("wrong_signer", "this wire step is the other party's to sign")
+        : err("illegal_transition", transition.error);
+    }
+
+    // Chain position: 1-based on the wire chain, seq 1 anchored to the
+    // payment_signaled hash, later ones to the prior wire event.
+    const expectedSeq = wireEvents.length + 1;
+    const tipHash = wireEvents.length === 0 ? anchor : wireEvents[wireEvents.length - 1].eventHash;
+    if (leaf.seq !== expectedSeq || leaf.prevHash !== tipHash) {
+      await tx.rollback();
+      return err("chain_conflict", `expected seq ${expectedSeq} on tip ${tipHash}`);
+    }
+
+    // Commitment cross-checks: the reference every claim/countersign names must
+    // be the committed N15, and every countersign/reversal must name the exact
+    // claim it acts on.
+    if (leaf.type === "wire_credit_claim" || leaf.type === "wire_credit_countersign") {
+      const n15 = await sessionN15Tx(tx, sessionId);
+      if (n15 == null || String(leaf.data.n15) !== n15) {
+        await tx.rollback();
+        return err("commitment_mismatch", "n15 differs from the committed wire reference");
+      }
+    }
+    if (leaf.type === "wire_credit_countersign" || leaf.type === "wire_reversed") {
+      const lastClaim = [...wireEvents].reverse().find((e) => e.type === "wire_credit_claim");
+      if (!lastClaim || String(leaf.data.claimHash) !== lastClaim.eventHash) {
+        await tx.rollback();
+        return err("commitment_mismatch", "claim hash does not match the observed claim");
+      }
+    }
+
+    // Pinned-key rule, the same as the exchange chain: a role signs every step
+    // with the key it pinned at its first exchange event.
+    if (role === "seller") {
+      if (input.signerPubkey !== cur.seller_signing_pubkey) {
+        await tx.rollback();
+        return err("wrong_signer", "seller key differs from the one pinned at commit");
+      }
+    } else if (cur.buyer_signing_pubkey && input.signerPubkey !== cur.buyer_signing_pubkey) {
+      await tx.rollback();
+      return err("wrong_signer", "buyer key differs from the one pinned earlier");
+    }
+
+    try {
+      await insertWireEvent(tx, sessionId, user.id, input);
+    } catch (e) {
+      // A concurrent post took this seq: the (session_id, seq) primary key makes
+      // the race a conflict, not a fork.
+      await tx.rollback();
+      if (String(e).includes("exchange_wire_claims") || String(e).toUpperCase().includes("UNIQUE")) {
+        return err("chain_conflict", "a concurrent wire step took this position");
+      }
+      throw e;
+    }
+    await tx.execute({
+      sql: `UPDATE exchange_sessions SET updated_at = ? WHERE id = ?`,
+      args: [t, sessionId],
+    });
+    await tx.commit();
+  } catch (e) {
+    try {
+      await tx.rollback();
+    } catch {
+      /* already closed */
+    }
+    throw e;
+  } finally {
+    tx.close();
+  }
+
+  const s = await loadSession(db, sessionId);
+  if (!s) return err("not_found");
+  const view = await buildView(db, s, user.id);
+  return view ? ok(view) : err("not_participant");
 }
 
 /* ----------------------------------------------------------------- reads */

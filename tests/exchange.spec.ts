@@ -41,23 +41,41 @@ import path from "node:path";
 import {
   EXCHANGE_VERSION,
   GENESIS_PREV_HASH,
+  WIRE_CLAIM_VERSION,
+  WIRE_TERMINAL_STATUSES,
+  accountNullifierHex,
+  crockford32,
   deriveSigningKeys,
   generateDek,
   encryptDataset,
   ciphertextRootOf,
   decryptAndVerify,
   dekCommitHex,
+  isN15,
+  isValidWireData,
+  n15Of,
   paymentCommitHex,
   eventHash,
+  resolveWireTransition,
   signLeaf,
+  uetrCommitHex,
   verifyLeafSignature,
   verifyChain,
+  verifyWireChain,
   resolveTransition,
   newSessionId,
   sizeBucket,
+  wireNonce,
+  wireNonceCommitHex,
+  wireRecordCommitHex,
+  wireSentCommitHex,
+  wireStatusFrom,
   type ExchangeLeaf,
   type ExchangeRole,
   type StoredEvent,
+  type StoredWireEvent,
+  type WireClaimLeaf,
+  type WireClaimType,
 } from "../lib/exchange";
 import { toB64url, fromB64url } from "../lib/e2ee";
 import { readFileSync, existsSync } from "node:fs";
@@ -130,7 +148,24 @@ function commitLeaf(args: {
   enc: Awaited<ReturnType<typeof encryptDataset>>;
   dekCommit: string;
   dekSalt: Uint8Array;
+  /** When present, the commit carries the wire reference N15 + a nonce commitment. */
+  n15?: string;
+  nonce?: Uint8Array;
 }): ExchangeLeaf {
+  const data: Record<string, unknown> = {
+    plaintextRoot: args.enc.plaintextRoot,
+    ciphertextRoot: args.enc.ciphertextRoot,
+    dekCommit: args.dekCommit,
+    dekSalt: toB64url(args.dekSalt),
+    chunkCount: args.enc.chunkCount,
+    chunkSize: args.enc.chunkSize,
+    sizeBucket: args.enc.sizeBucket,
+    buyer: args.buyer,
+  };
+  if (args.n15 && args.nonce) {
+    data.n15 = args.n15;
+    data.wireNonceCommit = wireNonceCommitHex(args.dealId, new Uint8Array(16).fill(9), args.nonce);
+  }
   return {
     v: EXCHANGE_VERSION,
     sessionId: args.sessionId,
@@ -141,16 +176,7 @@ function commitLeaf(args: {
     actor: args.seller,
     prevHash: GENESIS_PREV_HASH,
     ts: Date.now(),
-    data: {
-      plaintextRoot: args.enc.plaintextRoot,
-      ciphertextRoot: args.enc.ciphertextRoot,
-      dekCommit: args.dekCommit,
-      dekSalt: toB64url(args.dekSalt),
-      chunkCount: args.enc.chunkCount,
-      chunkSize: args.enc.chunkSize,
-      sizeBucket: args.enc.sizeBucket,
-      buyer: args.buyer,
-    },
+    data,
   };
 }
 
@@ -205,7 +231,68 @@ type SessionView = {
   sellerSigningPubkey: string;
   buyerSigningPubkey: string | null;
   events: StoredEvent[];
+  n15: string | null;
+  wireStatus: "pending" | "claimed" | "observed" | "reversed";
+  wireAnchorHash: string | null;
+  wireEvents: StoredWireEvent[];
 };
+
+/** Build a WireCreditClaim leaf on the wire sub-chain (anchored to payment_signaled). */
+function wireLeaf(
+  session: SessionView,
+  role: ExchangeRole,
+  actor: string,
+  type: WireClaimType,
+  data: Record<string, unknown>,
+): WireClaimLeaf {
+  const n = session.wireEvents.length;
+  const prevHash =
+    n === 0 ? session.wireAnchorHash ?? GENESIS_PREV_HASH : session.wireEvents[n - 1].eventHash;
+  return {
+    v: EXCHANGE_VERSION,
+    sessionId: session.id,
+    dealId: session.dealId,
+    seq: n + 1,
+    type,
+    actorRole: role,
+    actor,
+    prevHash,
+    ts: Date.now(),
+    data,
+  };
+}
+
+async function postWireSigned(
+  api: APIRequestContext,
+  sessionId: string,
+  leaf: WireClaimLeaf,
+  keys: { publicKey: string; secretKey: Uint8Array },
+) {
+  return api.post(`${BASE}/api/exchange/${sessionId}/wire`, {
+    data: {
+      leaf,
+      eventHash: eventHash(leaf),
+      signature: signLeaf(leaf, keys.secretKey),
+      signerPubkey: keys.publicKey,
+    },
+  });
+}
+
+/** A well-formed seller WireCreditClaim body; caller overrides fields per test. */
+function claimData(n15: string, over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    n15,
+    rail: "WIRE",
+    amountBucket: "$80k",
+    terminalStatus: WIRE_TERMINAL_STATUSES[0],
+    valueTime: Date.now(),
+    bankRecordCommit: wireRecordCommitHex(new Uint8Array(16).fill(3), new TextEncoder().encode(`RECORD_MARKER_${RUN}`)),
+    accountNullifier: accountNullifierHex(SELLER.handle, `ACCT_MARKER_${RUN}`),
+    uetrCommit: uetrCommitHex(new Uint8Array(16).fill(4), `UETR_MARKER_${RUN}`),
+    schemaVersion: WIRE_CLAIM_VERSION,
+    ...over,
+  };
+}
 
 /* ------------------------------------------------------------ UI helpers */
 
@@ -415,6 +502,87 @@ test("PURE the hash-linked chain verifies; reorder, relink, resign and illegal t
   expect(resolveTransition("payment_signaled", "abort", "buyer").ok).toBe(true); // abort always ok
 });
 
+test("PURE N15 is a 15-char Crockford alias, and the wire-claim chain verifies + rejects every tamper", async () => {
+  // N15 = first 15 Crockford-Base32 chars of SHA-256(dealId || nonce): uppercase,
+  // transcription-safe (no I, L, O, U), and stable for a given (dealId, nonce).
+  const dealId = "deal_wire";
+  const nonce = wireNonce();
+  const n15 = n15Of(dealId, nonce);
+  expect(n15).toHaveLength(15);
+  expect(isN15(n15)).toBe(true);
+  expect(n15).toBe(n15Of(dealId, nonce)); // deterministic
+  expect(n15).not.toBe(n15Of(dealId, wireNonce())); // fresh nonce, fresh alias
+  expect(/[ILOU]/.test(n15)).toBe(false);
+  // Crockford encodes 5 bits per char: a 32-byte digest yields 52 chars.
+  expect(crockford32(new Uint8Array(32)).length).toBe(52);
+
+  // The wire sub-state machine: claim -> countersign -> reversed, roles enforced.
+  expect(resolveWireTransition("pending", "wire_credit_claim", "seller").ok).toBe(true);
+  expect(resolveWireTransition("pending", "wire_credit_claim", "buyer").ok).toBe(false); // wrong role
+  expect(resolveWireTransition("pending", "wire_credit_countersign", "buyer").ok).toBe(false); // out of order
+  expect(resolveWireTransition("claimed", "wire_credit_countersign", "buyer").ok).toBe(true);
+  expect(resolveWireTransition("claimed", "wire_credit_countersign", "seller").ok).toBe(false); // wrong role
+  expect(resolveWireTransition("observed", "wire_reversed", "seller").ok).toBe(true);
+  expect(resolveWireTransition("observed", "wire_reversed", "buyer").ok).toBe(true); // either party
+  expect(resolveWireTransition("pending", "wire_reversed", "seller").ok).toBe(false); // nothing to reverse
+
+  // Data validation catches a missing bound field.
+  expect(isValidWireData("wire_credit_claim", claimData(n15))).toBe(true);
+  expect(isValidWireData("wire_credit_claim", claimData(n15, { n15: "toolong-not-crockford" }))).toBe(false);
+  expect(isValidWireData("wire_credit_claim", claimData(n15, { terminalStatus: "final" }))).toBe(false);
+  expect(isValidWireData("wire_credit_countersign", { claimHash: "a".repeat(64), n15, accept: true })).toBe(true);
+  expect(isValidWireData("wire_credit_countersign", { claimHash: "a".repeat(64), n15, accept: false })).toBe(false);
+
+  // Build a two-leaf wire chain anchored to a payment_signaled hash and verify it.
+  const seller = await deriveSigningKeys("wire-seller", PW);
+  const buyer = await deriveSigningKeys("wire-buyer", PW);
+  const sessionId = newSessionId();
+  const anchor = "d".repeat(64); // the payment_signaled event hash
+  const claim: WireClaimLeaf = {
+    v: EXCHANGE_VERSION, sessionId, dealId, seq: 1, type: "wire_credit_claim",
+    actorRole: "seller", actor: "wire-seller", prevHash: anchor, ts: 1, data: claimData(n15),
+  };
+  const claimHash = eventHash(claim);
+  const counter: WireClaimLeaf = {
+    v: EXCHANGE_VERSION, sessionId, dealId, seq: 2, type: "wire_credit_countersign",
+    actorRole: "buyer", actor: "wire-buyer", prevHash: claimHash, ts: 2,
+    data: { claimHash, n15, accept: true },
+  };
+  const wireEvents: StoredWireEvent[] = [
+    storedWire(claim, seller, claimHash),
+    storedWire(counter, buyer, eventHash(counter)),
+  ];
+  expect(verifyWireChain(sessionId, dealId, anchor, wireEvents).ok).toBe(true);
+  expect(wireStatusFrom(wireEvents)).toBe("observed");
+
+  // COUNTERFACTUALS on the wire chain.
+  expect(verifyWireChain(sessionId, dealId, "e".repeat(64), wireEvents).ok).toBe(false); // wrong anchor
+  const reordered = [wireEvents[1], wireEvents[0]];
+  expect(verifyWireChain(sessionId, dealId, anchor, reordered).ok).toBe(false); // reorder
+  const wrongClaimRef = {
+    ...wireEvents[1],
+    data: { ...(counter.data as Record<string, unknown>), claimHash: "f".repeat(64) },
+  };
+  expect(verifyWireChain(sessionId, dealId, anchor, [wireEvents[0], wrongClaimRef]).ok).toBe(false);
+  const resigned = { ...wireEvents[1], signerPubkey: seller.publicKey };
+  expect(verifyWireChain(sessionId, dealId, anchor, [wireEvents[0], resigned]).ok).toBe(false);
+});
+
+function storedWire(leaf: WireClaimLeaf, keys: { publicKey: string; secretKey: Uint8Array }, hash: string): StoredWireEvent {
+  return {
+    seq: leaf.seq,
+    type: leaf.type,
+    actorRole: leaf.actorRole,
+    actor: leaf.actor,
+    prevHash: leaf.prevHash,
+    ts: leaf.ts,
+    data: leaf.data,
+    eventHash: hash,
+    signerPubkey: keys.publicKey,
+    signature: signLeaf(leaf, keys.secretKey),
+  };
+}
+
 function stored(leaf: ExchangeLeaf, keys: { publicKey: string; secretKey: Uint8Array }, hash: string): StoredEvent {
   return {
     seq: leaf.seq,
@@ -528,6 +696,8 @@ let live: {
   dek: Uint8Array;
   dekSalt: Uint8Array;
   enc: Awaited<ReturnType<typeof encryptDataset>>;
+  n15: string;
+  nonce: Uint8Array;
 };
 
 test.beforeAll(async ({ browser }) => {
@@ -561,14 +731,16 @@ test("00 fixture: two accounts and a co-attested deal", async ({ request }) => {
   expect(dealId.length).toBeGreaterThan(0);
 });
 
-test("EX-1 seller commits: encrypted, signed, and the server stores only the commitment", async () => {
+test("EX-1 seller commits: encrypted, signed, wire reference minted, server stores only commitments", async () => {
   const sessionId = newSessionId();
   const dek = generateDek();
   const dekSalt = new Uint8Array(16);
   crypto.getRandomValues(dekSalt);
+  const nonce = wireNonce();
+  const n15 = n15Of(dealId, nonce);
   const enc = await encryptDataset(sessionId, new TextEncoder().encode(DATASET), dek, CHUNK);
   const dekCommit = dekCommitHex(dealId, dekSalt, dek);
-  const leaf = commitLeaf({ sessionId, dealId, seller: SELLER.handle, buyer: BUYER.handle, enc, dekCommit, dekSalt });
+  const leaf = commitLeaf({ sessionId, dealId, seller: SELLER.handle, buyer: BUYER.handle, enc, dekCommit, dekSalt, n15, nonce });
 
   const res = await postSigned(sellerCtx.request, `${BASE}/api/exchange`, leaf, sellerKeys);
   expect(res.status(), await res.text()).toBe(201);
@@ -576,6 +748,10 @@ test("EX-1 seller commits: encrypted, signed, and the server stores only the com
   expect(session.state).toBe("committed");
   expect(session.ciphertextRoot).toBe(enc.ciphertextRoot);
   expect(session.dekCommit).toBe(dekCommit);
+  // The wire reference is surfaced from the signed commit; the wire phase is pending.
+  expect(session.n15).toBe(n15);
+  expect(session.wireStatus).toBe("pending");
+  expect(session.wireEvents.length).toBe(0);
 
   // Deliver the opaque ciphertext through the demo carrier.
   const up = await sellerCtx.request.post(`${BASE}/api/exchange/${sessionId}/blob`, {
@@ -583,7 +759,7 @@ test("EX-1 seller commits: encrypted, signed, and the server stores only the com
   });
   expect(up.status()).toBe(200);
 
-  live = { sessionId, dek, dekSalt, enc };
+  live = { sessionId, dek, dekSalt, enc, n15, nonce };
 });
 
 test("EX-2 buyer verifies the ciphertext against the commitment and signs the ack", async () => {
@@ -604,19 +780,85 @@ test("EX-2 buyer verifies the ciphertext against the commitment and signs the ac
   expect((await res.json()).session.state).toBe("ciphertext_ack");
 });
 
-test("EX-3 buyer signals payment as a commitment with no amount", async () => {
+test("EX-3 buyer commits PAYMENT_SENT: a salted hash of the wire confirmation, bucket and N15", async () => {
   const session = await fetchSession(buyerCtx.request, live.sessionId);
   const salt = new Uint8Array(16);
   crypto.getRandomValues(salt);
-  const commit = paymentCommitHex(salt, `wire-${RUN}`);
-  const leaf = nextLeaf(session, "buyer", BUYER.handle, "payment_signaled", { paymentCommit: commit, method: "wire" });
+  // The buyer hashes its wire confirmation IN THE BROWSER; the file never uploads.
+  const confirmation = new TextEncoder().encode(`WIRE_RECEIPT_${RUN}`);
+  const commit = wireSentCommitHex(salt, "$80k", live.n15, confirmation);
+  const leaf = nextLeaf(session, "buyer", BUYER.handle, "payment_signaled", {
+    paymentCommit: commit,
+    method: "wire",
+    n15: live.n15,
+    amountBucket: "$80k",
+  });
   const res = await postSigned(buyerCtx.request, `${BASE}/api/exchange/${live.sessionId}/events`, leaf, buyerKeys);
   expect(res.status(), await res.text()).toBe(200);
-  expect((await res.json()).session.state).toBe("payment_signaled");
+  const after = (await res.json()).session as SessionView;
+  expect(after.state).toBe("payment_signaled");
+  expect(after.wireStatus).toBe("pending"); // the wire claim has not happened yet
 });
 
-test("EX-4 seller reveals the key; the server records only that the commitment was opened", async () => {
+test("EX-3b the three-party wire claim: reveal is GATED until the buyer countersigns", async () => {
+  // COUNTERFACTUAL: the seller cannot reveal the key before the wire credit is
+  // mutually observed. The new gate returns wire_not_observed (409).
+  let session = await fetchSession(sellerCtx.request, live.sessionId);
+  const earlyReveal = nextLeaf(session, "seller", SELLER.handle, "dek_revealed", { dekCommit: session.dekCommit });
+  const blocked = await postSigned(sellerCtx.request, `${BASE}/api/exchange/${live.sessionId}/events`, earlyReveal, sellerKeys);
+  expect(blocked.status(), "reveal before wire_credit_observed is refused").toBe(409);
+  expect((await blocked.json()).error).toBe("wire_not_observed");
+
+  // COUNTERFACTUAL: the BUYER cannot post the seller's wire_credit_claim.
+  const buyerClaim = wireLeaf(session, "buyer", BUYER.handle, "wire_credit_claim", claimData(live.n15));
+  const wrongRole = await postWireSigned(buyerCtx.request, live.sessionId, buyerClaim, buyerKeys);
+  expect([400, 409]).toContain(wrongRole.status());
+
+  // COUNTERFACTUAL: a claim whose N15 is not the committed reference is refused.
+  const badRef = wireLeaf(session, "seller", SELLER.handle, "wire_credit_claim", claimData("0".repeat(15)));
+  const badRefRes = await postWireSigned(sellerCtx.request, live.sessionId, badRef, sellerKeys);
+  expect(badRefRes.status()).toBe(400);
+  expect((await badRefRes.json()).error).toBe("commitment_mismatch");
+
+  // The seller observes the inbound credit and signs the WireCreditClaim.
+  session = await fetchSession(sellerCtx.request, live.sessionId);
+  const claim = wireLeaf(session, "seller", SELLER.handle, "wire_credit_claim", claimData(live.n15));
+  const claimHash = eventHash(claim);
+  const claimRes = await postWireSigned(sellerCtx.request, live.sessionId, claim, sellerKeys);
+  expect(claimRes.status(), await claimRes.text()).toBe(200);
+  const afterClaim = (await claimRes.json()).session as SessionView;
+  expect(afterClaim.wireStatus).toBe("claimed");
+  expect(afterClaim.state).toBe("payment_signaled"); // still the payment phase
+
+  // COUNTERFACTUAL: a countersign naming the WRONG claim hash is refused.
+  session = await fetchSession(buyerCtx.request, live.sessionId);
+  const badCounter = wireLeaf(session, "buyer", BUYER.handle, "wire_credit_countersign", {
+    claimHash: "a".repeat(64),
+    n15: live.n15,
+    accept: true,
+  });
+  const badCounterRes = await postWireSigned(buyerCtx.request, live.sessionId, badCounter, buyerKeys);
+  expect(badCounterRes.status()).toBe(400);
+  expect((await badCounterRes.json()).error).toBe("commitment_mismatch");
+
+  // The buyer countersigns the exact claim: wire_credit_observed.
+  const counter = wireLeaf(session, "buyer", BUYER.handle, "wire_credit_countersign", {
+    claimHash,
+    n15: live.n15,
+    accept: true,
+  });
+  const counterRes = await postWireSigned(buyerCtx.request, live.sessionId, counter, buyerKeys);
+  expect(counterRes.status(), await counterRes.text()).toBe(200);
+  const observed = (await counterRes.json()).session as SessionView;
+  expect(observed.wireStatus).toBe("observed");
+  expect(observed.wireEvents.length).toBe(2);
+  // The wire chain reverifies in this process, anchored to the payment event.
+  expect(verifyWireChain(observed.id, observed.dealId, observed.wireAnchorHash!, observed.wireEvents).ok).toBe(true);
+});
+
+test("EX-4 seller reveals the key, now that the wire credit is observed", async () => {
   const session = await fetchSession(sellerCtx.request, live.sessionId);
+  expect(session.wireStatus).toBe("observed");
   const leaf = nextLeaf(session, "seller", SELLER.handle, "dek_revealed", { dekCommit: session.dekCommit });
   const res = await postSigned(sellerCtx.request, `${BASE}/api/exchange/${live.sessionId}/events`, leaf, sellerKeys);
   expect(res.status(), await res.text()).toBe(200);
@@ -651,8 +893,11 @@ test("EX-5 buyer decrypts, verifies against the plaintext root, and completes", 
   const final = (await res.json()).session as SessionView;
   expect(final.state).toBe("completed");
   expect(final.events.length).toBe(5);
-  // The whole chain reverifies in this process against the served leaves.
+  // The exchange chain and the wire-credit chain both reverify in this process.
   expect(verifyChain(final.id, final.dealId, final.events).ok).toBe(true);
+  expect(final.wireStatus).toBe("observed");
+  expect(final.wireEvents.length).toBe(2);
+  expect(verifyWireChain(final.id, final.dealId, final.wireAnchorHash!, final.wireEvents).ok).toBe(true);
 });
 
 test("EX-5b the exchange PAGE renders the completed session: ladder, terminal note, signed chain", async () => {
@@ -711,19 +956,38 @@ test("EX-7 PRIVACY: the server tables hold no dataset plaintext and no key", asy
   const c = db();
   const sessions = await c.execute("SELECT * FROM exchange_sessions");
   const events = await c.execute("SELECT * FROM exchange_events");
+  const wire = await c.execute("SELECT * FROM exchange_wire_claims");
   c.close();
 
   const marker = `SECRET_MARKER_${RUN}`;
   const dekB64 = toB64url(live.dek);
   const plaintextTokens = ["signups", "revenue_usd", marker];
+  // The WireCreditClaim carries commitments only: the raw bank record, receiving
+  // account, IMAD/UETR and wire receipt are hashed in the browser and must never
+  // land in the wire-claim table.
+  const wireSecrets = [
+    `RECORD_MARKER_${RUN}`,
+    `ACCT_MARKER_${RUN}`,
+    `UETR_MARKER_${RUN}`,
+    `WIRE_RECEIPT_${RUN}`,
+  ];
 
-  const dumpAll = JSON.stringify(sessions.rows) + JSON.stringify(events.rows);
+  const dumpAll =
+    JSON.stringify(sessions.rows) + JSON.stringify(events.rows) + JSON.stringify(wire.rows);
   // The demo carrier holds AEAD ciphertext; the plaintext markers and the key
   // must appear NOWHERE in any exchange row, including that opaque blob.
-  for (const tok of plaintextTokens) {
-    expect(dumpAll.includes(tok), `plaintext token "${tok}" must not appear in the exchange tables`).toBe(false);
+  for (const tok of [...plaintextTokens, ...wireSecrets]) {
+    expect(dumpAll.includes(tok), `secret token "${tok}" must not appear in the exchange tables`).toBe(false);
   }
   expect(dumpAll.includes(dekB64), "the DEK must never reach the server").toBe(false);
+
+  // The wire chain IS there, as commitments: a claim and a countersign, and no
+  // leaf ever claims fiat finality (the terminal honest state is only "observed").
+  expect(wire.rows.length, "our wire-claim events persisted").toBeGreaterThanOrEqual(2);
+  const wireTypes = wire.rows.map((r) => String(r.type));
+  expect(wireTypes).toContain("wire_credit_claim");
+  expect(wireTypes).toContain("wire_credit_countersign");
+  expect(JSON.stringify(wire.rows).includes("fiat_final"), "no leaf ever claims fiat finality").toBe(false);
 
   // What IS there: our live session, its commitments, its state and signatures.
   const ours = sessions.rows.find((r) => String(r.id) === live.sessionId);
@@ -1055,6 +1319,7 @@ test("PRIVACY-ALL exchange, receipts and the translog carry no data, no key, no 
   const c = db();
   const sessions = await c.execute("SELECT * FROM exchange_sessions");
   const events = await c.execute("SELECT * FROM exchange_events");
+  const wire = await c.execute("SELECT * FROM exchange_wire_claims");
   const sigs = await c.execute("SELECT * FROM deal_receipt_signatures");
   const leaves = await c.execute("SELECT payload_json FROM translog_leaves");
   c.close();
@@ -1062,13 +1327,23 @@ test("PRIVACY-ALL exchange, receipts and the translog carry no data, no key, no 
   const stringDump =
     JSON.stringify(sessions.rows) +
     JSON.stringify(events.rows) +
+    JSON.stringify(wire.rows) +
     JSON.stringify(sigs.rows) +
     JSON.stringify(leaves.rows) +
     sigToken;
 
-  // NO dataset bytes anywhere (the demo blob is opaque AEAD ciphertext).
-  for (const tok of ["signups", "revenue_usd", `SECRET_MARKER_${RUN}`]) {
-    expect(stringDump.includes(tok), `dataset token "${tok}" absent`).toBe(false);
+  // NO dataset bytes anywhere (the demo blob is opaque AEAD ciphertext), and NO
+  // wire-claim secret (bank record, account, UETR, wire receipt): all hashed.
+  for (const tok of [
+    "signups",
+    "revenue_usd",
+    `SECRET_MARKER_${RUN}`,
+    `RECORD_MARKER_${RUN}`,
+    `ACCT_MARKER_${RUN}`,
+    `UETR_MARKER_${RUN}`,
+    `WIRE_RECEIPT_${RUN}`,
+  ]) {
+    expect(stringDump.includes(tok), `secret token "${tok}" absent`).toBe(false);
   }
   // NO DEK: even the completed flow's key never reached the server.
   expect(stringDump.includes(toB64url(live.dek)), "the DEK never reaches the server").toBe(false);
@@ -1084,7 +1359,7 @@ test("PRIVACY-ALL exchange, receipts and the translog carry no data, no key, no 
   const nums = new Set<number>();
   for (const r of leaves.rows) numbersIn(JSON.parse(String(r.payload_json)), []).forEach((n) => nums.add(n));
   for (const r of [...sessions.rows, ...sigs.rows]) numbersIn(r, []).forEach((n) => nums.add(n));
-  for (const r of events.rows) {
+  for (const r of [...events.rows, ...wire.rows]) {
     numbersIn(r, []).forEach((n) => nums.add(n));
     numbersIn(JSON.parse(String((r as Record<string, unknown>).payload_json)), []).forEach((n) => nums.add(n));
   }

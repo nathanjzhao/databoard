@@ -6,6 +6,14 @@ much trust each way of doing it removes. Tier A is built and live at
 compliance line and the integration order are settled before any code exists.
 The payment rung on `/transparency/verification` points here.
 
+The payment half has its own ladder, because real buyers pay by wire, not USDC.
+The `pay` step of Tier A is upgraded from a self-reported signal to a real
+proof-of-payment in `docs/SETTLEMENT.md`: F1 the bilateral wire-credit claim
+(built), F2 a zkTLS proof against the receiving bank (seam in `lib/payproof.ts`),
+and F3 licensed escrow (Escrow.com) or an invisible on-chain bridge
+(Bridge.xyz), none of which lets the platform custody funds. Read that alongside
+the Tier C sketch below.
+
 ## The result we are working around
 
 Atomic fair exchange of a dataset for a payment between two mutually
@@ -103,10 +111,18 @@ link on load; a broken chain is shown as broken.
   choosing to pay after acking ciphertext. What the chain buys is not completion,
   it is **evidence**: whoever stopped, and after which step, is provable from the
   signatures. This is the Pagnia-Gaertner gap, unremovable at this tier.
-- **Payment is off-platform and self-reported.** Step 4 is a commitment to a
-  reference the buyer holds, not proof that money moved. Binding a real payment
-  to the step is the payment rung on `/transparency/verification` and Tier B/C
-  below.
+- **Payment is off-platform and mutually attested, not bank-proven.** Step 4 is
+  no longer a lone self-report: it is a three-party WireCreditClaim (F1 in
+  `docs/SETTLEMENT.md`). The buyer commits PAYMENT_SENT, a salted hash of its
+  wire confirmation plus the amount bucket and the deal's `N15` reference; the
+  seller, having observed the inbound credit, signs the canonical claim plus a
+  salted commitment to its receiving-bank record; the buyer countersigns. Only a
+  countersigned `wire_credit_observed` unlocks the key reveal (step 5). This is
+  mutual attestation that a payment with this reference was sent and observed,
+  **not** proof a bank irrevocably credited it: an accepted wire can be
+  returned, frozen, or recalled, so either party can append a `wire_reversed`
+  event that reopens the deal. Binding an *independent* proof that money moved is
+  the payment rung on `/transparency/verification` and F2/Tier B/C below.
 - **Trust in served code, not in stored data.** The guarantee is against the
   database, not against a malicious operator serving tampered JavaScript that
   exfiltrates a key. Open code and public CI make that detectable, not
@@ -189,6 +205,13 @@ funds move buyer to seller through Stripe; the platform reads payment status and
 never custodies. Completion of the Tier A reveal can be gated on Stripe reporting
 the charge captured.
 
+The fuller fiat treatment, and the one that fits AI-lab buyers paying $5M by
+wire, is `docs/SETTLEMENT.md`. Its F3 rung replaces Stripe Connect with a
+licensed escrow (Escrow.com, which can disburse the platform's 2.5% referral at
+source) or an invisible on-chain bridge (Bridge.xyz), with F1 and F2 as the
+attested and proved rungs beneath it. Same posture as here: the platform never
+holds principal.
+
 ### What Tier C removes trust in
 
 - **Payment reality.** Stripe reporting a captured charge is independent evidence
@@ -211,7 +234,7 @@ the charge captured.
 
 | | Data integrity | Key correctness | Atomic settlement | Payment is real | Operator cannot forge | Trustless |
 | --- | --- | --- | --- | --- | --- | --- |
-| **A (built)** | yes (roots) | yes (buyer-checked) | no | no (self-report) | yes (party sigs) | mostly (served-code caveat) |
+| **A (built)** | yes (roots) | yes (buyer-checked) | no | mutual attestation (WireCreditClaim, reversible) | yes (party sigs) | mostly (served-code caveat) |
 | **B (on-chain)** | yes | yes (hash-lock) | **yes** | yes (on-chain) | yes (EAS) | yes (contract/chain trust) |
 | **C (Stripe)** | yes (Tier A) | yes (Tier A) | no | **yes** (processor) | yes (Tier A sigs) | no (regulated intermediary) |
 

@@ -314,10 +314,22 @@ export async function earningEventsFor(
   // The timely-recording credit (A) needs, per earning row: whether this earner
   // committed evidence (p.evidence_hash), and the deal's stated close date and
   // recorded_at (deal_close_dates, LEFT JOIN so deals without one still count,
-  // just at zero credit). Nothing else about the credit leaves this query.
+  // just at zero credit). A deal whose exchange reached wire_credit_observed (a
+  // countersigned, un-reversed WireCreditClaim; Feature 1) counts as EVIDENCED
+  // here too: a mutually-attested inbound wire credit earns the same timely
+  // credit as a committed document, so proving payment is at least as good as
+  // committing a document. Reverting a credit appends a later wire_reversed
+  // event, so the deal drops out of wire_observed and the credit reverts.
+  // Nothing else about the credit leaves this query.
   const rs = await db.execute({
     sql: `SELECT p.user_id, p.share_usd, p.deal_id, p.evidence_hash,
                  dc.stated_close_at, dc.recorded_at,
+                 EXISTS (SELECT 1 FROM exchange_sessions s
+                          JOIN exchange_wire_claims w ON w.session_id = s.id
+                         WHERE s.deal_id = p.deal_id
+                           AND w.seq = (SELECT MAX(w2.seq) FROM exchange_wire_claims w2
+                                         WHERE w2.session_id = s.id)
+                           AND w.type = 'wire_credit_countersign') AS wire_observed,
                  (SELECT MAX(q.confirmed_at) FROM deal_participants q
                    WHERE q.deal_id = p.deal_id AND q.status = 'confirmed') AS attested_at
             FROM deal_participants p
@@ -333,6 +345,7 @@ export async function earningEventsFor(
   for (const r of rs.rows) {
     const uid = String(r.user_id);
     const list = out.get(uid) ?? [];
+    const earnerEvidenced = r.evidence_hash != null || Number(r.wire_observed) === 1;
     list.push({
       dealId: String(r.deal_id),
       shareUsd: Number(r.share_usd),
@@ -340,7 +353,7 @@ export async function earningEventsFor(
       creditBps: recordingCreditBps(
         r.recorded_at == null ? null : Number(r.recorded_at),
         r.stated_close_at == null ? null : Number(r.stated_close_at),
-        r.evidence_hash != null,
+        earnerEvidenced,
       ),
     });
     out.set(uid, list);

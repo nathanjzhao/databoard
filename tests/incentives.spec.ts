@@ -536,6 +536,25 @@ test("C1 an evidence-committed dollar outranks a co-attested dollar of the same 
   // counted every confirmed dollar at 1.0, which would tie these two.
   expect(WEIGHT_CO_ATTESTED).not.toBe(WEIGHT_EVIDENCE_COMMITTED);
 
+  // Feature 1: a PAYMENT-PROVEN deal weights higher. A co-attested deal whose
+  // exchange reached wire_credit_observed (a countersigned, un-reversed
+  // WireCreditClaim) counts at the FULL evidence-committed weight, not the halved
+  // co-attested one: a mutually-attested inbound wire credit is at least as
+  // strong as a committed document hash. It reverts to 0.5 once the wire is
+  // reversed (the caller passes wireObserved=false again).
+  expect(tierValueWeight(coAttestedRows, true)).toBe(WEIGHT_EVIDENCE_COMMITTED);
+  expect(100_000 * tierValueWeight(coAttestedRows, true)).toBe(100_000);
+  expect(tierValueWeight(coAttestedRows, false)).toBe(WEIGHT_CO_ATTESTED);
+  // COUNTERFACTUAL: wire_credit_observed only UPGRADES a dollar that already
+  // counts; it never makes a non-counting dollar count. A deal with no confirmed
+  // counterparty is worth zero even when observed, the same predicate the fee
+  // fires on, so proving payment cannot conjure standing from an unconfirmed deal.
+  const noConfirmedCounterparty = [
+    { role: "reporter" as const, status: "confirmed" as const, evidenceHash: null },
+    { role: "participant" as const, status: "pending" as const, evidenceHash: null },
+  ];
+  expect(tierValueWeight(noConfirmedCounterparty, true)).toBe(0);
+
   // Wired into the live leaderboard, where it FLIPS a real pair. quiet-ledger's
   // standing is mostly evidence-committed (1.0); granite-fox carries a
   // co-attested slice that is halved. Recompute both from raw rows.

@@ -41,6 +41,7 @@ import { appendMessage } from "../app/api/threads/store.ts";
 import {
   createExchangeSession,
   appendExchangeEvent,
+  appendWireClaim,
   setDemoBlob,
 } from "../app/api/exchange/store.ts";
 import {
@@ -56,14 +57,23 @@ import {
 import {
   EXCHANGE_VERSION,
   GENESIS_PREV_HASH,
+  WIRE_CLAIM_VERSION,
+  WIRE_TERMINAL_STATUSES,
+  accountNullifierHex,
   encryptDataset,
   eventHash,
   generateDek,
   dekCommitHex,
+  n15Of,
   newSessionId,
   paymentCommitHex,
   signLeaf,
+  uetrCommitHex,
+  wireNonce,
+  wireNonceCommitHex,
+  wireRecordCommitHex,
   type ExchangeLeaf,
+  type WireClaimLeaf,
 } from "../lib/exchange.ts";
 import type { SignedEventInput } from "../app/api/exchange/store.ts";
 
@@ -516,6 +526,7 @@ async function main() {
     "invites",
     "hidden_asks",
     "operators",
+    "exchange_wire_claims",
     "exchange_events",
     "exchange_sessions",
     "deal_receipt_signatures",
@@ -969,8 +980,15 @@ async function main() {
   // party and hash-linked exactly as a browser would post it: seller commits
   // (roots + DEK commitment, never the data or the key), the demo ciphertext
   // blob is uploaded as opaque bytes, the buyer acks the ciphertext root and
-  // signals payment. It stops at payment_signaled, so the page shows the
-  // seller's DEK reveal as the next move.
+  // commits its PAYMENT_SENT proof (a salted hash of a wire confirmation, the
+  // amount bucket and this deal's wire reference N15). Then the upgraded,
+  // mutually-signed pay step (Feature 1): the seller observes the inbound credit
+  // and signs the WireCreditClaim (a salted commitment to its receiving-bank
+  // record + an account nullifier, never a bank name or account number), and the
+  // buyer countersigns. It stops at payment_signaled with the wire claim
+  // wire_credit_observed, so the page renders a countersigned proof-of-payment
+  // and the deal feeds the verified-amount weighting; the seller's key reveal is
+  // the next move.
   {
     const dealId = dealIds[0];
     const sellerName = "quiet-ledger";
@@ -990,6 +1008,8 @@ async function main() {
     const sessionId = newSessionId();
     const dek = generateDek();
     const dekSalt = new Uint8Array(randomBytes(16));
+    const nonce = wireNonce();
+    const n15 = n15Of(dealId, nonce);
     const dataset = new TextEncoder().encode(
       "demo dataset (synthetic): 8 household-robotics episodes, sensor+3d, off-platform in production",
     );
@@ -1015,6 +1035,8 @@ async function main() {
         chunkSize: enc.chunkSize,
         sizeBucket: enc.sizeBucket,
         buyer: buyerName,
+        n15,
+        wireNonceCommit: wireNonceCommitHex(dealId, new Uint8Array(randomBytes(16)), nonce),
       },
     };
     const committed = await createExchangeSession(seller, signInput(commitLeaf, sellerSigning));
@@ -1054,13 +1076,76 @@ async function main() {
       actor: buyerName,
       prevHash: head.headHash,
       ts: now(),
-      data: { paymentCommit: paymentCommitHex(paySalt, "wire ref demo-0001"), method: "wire" },
+      data: {
+        paymentCommit: paymentCommitHex(paySalt, "wire ref demo-0001"),
+        method: "wire",
+        n15,
+        amountBucket: "$200k",
+      },
     };
     const paid = await appendExchangeEvent(buyer, sessionId, signInput(payLeaf, buyerSigning));
     if (!paid.ok) throw new Error(`seed exchange payment_signaled: ${paid.error}`);
+
+    // The WireCreditClaim (Feature 1) rides its own hash-linked chain anchored to
+    // the payment_signaled event. seq 1 is the seller's claim; seq 2 is the
+    // buyer's countersign, which reaches wire_credit_observed. Everything the
+    // browser would hash locally (bank record, receiving account, UETR) is hashed
+    // here too, so the server row carries commitments and buckets only.
+    const signWireInput = (leaf: WireClaimLeaf, signing: SigningKeys): SignedEventInput => ({
+      leaf: leaf as unknown as ExchangeLeaf,
+      eventHash: eventHash(leaf),
+      signature: signLeaf(leaf, signing.secretKey),
+      signerPubkey: signing.publicKey,
+    });
+
+    const claimLeaf: WireClaimLeaf = {
+      v: EXCHANGE_VERSION,
+      sessionId,
+      dealId,
+      seq: 1,
+      type: "wire_credit_claim",
+      actorRole: "seller",
+      actor: sellerName,
+      prevHash: paid.value.wireAnchorHash!,
+      ts: now(),
+      data: {
+        n15,
+        rail: "WIRE",
+        amountBucket: "$200k",
+        terminalStatus: WIRE_TERMINAL_STATUSES[0],
+        valueTime: now(),
+        bankRecordCommit: wireRecordCommitHex(
+          new Uint8Array(randomBytes(16)),
+          new TextEncoder().encode("demo credit advice (synthetic): inbound wire, robotics trajectories"),
+        ),
+        accountNullifier: accountNullifierHex(sellerName, "demo-receiving-account-0001"),
+        uetrCommit: uetrCommitHex(new Uint8Array(randomBytes(16)), "demo-uetr-0001"),
+        schemaVersion: WIRE_CLAIM_VERSION,
+      },
+    };
+    const claimed = await appendWireClaim(seller, sessionId, signWireInput(claimLeaf, sellerSigning));
+    if (!claimed.ok) throw new Error(`seed exchange wire_credit_claim: ${claimed.error}`);
+
+    const claimHash = eventHash(claimLeaf);
+    const counterLeaf: WireClaimLeaf = {
+      v: EXCHANGE_VERSION,
+      sessionId,
+      dealId,
+      seq: 2,
+      type: "wire_credit_countersign",
+      actorRole: "buyer",
+      actor: buyerName,
+      prevHash: claimHash,
+      ts: now(),
+      data: { claimHash, n15, accept: true },
+    };
+    const observed = await appendWireClaim(buyer, sessionId, signWireInput(counterLeaf, buyerSigning));
+    if (!observed.ok) throw new Error(`seed exchange wire_credit_countersign: ${observed.error}`);
+
     console.log(
       `exchange: ${sessionId} on deal 0, seller @${sellerName} buyer @${buyerName}, ` +
-        `state ${paid.value.state} (seller reveals the DEK next)`,
+        `state ${observed.value.state} wire ${observed.value.wireStatus} ref ${n15} ` +
+        `(countersigned proof-of-payment; seller reveals the key next)`,
     );
   }
 

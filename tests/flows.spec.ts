@@ -707,6 +707,7 @@ test("10 PRIVACY: no PII string appears in any row of any table, new tables incl
     "deals",
     "exchange_events",
     "exchange_sessions",
+    "exchange_wire_claims",
     "hidden_asks",
     "invite_edges",
     "invites",

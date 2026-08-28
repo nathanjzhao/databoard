@@ -93,6 +93,14 @@ export const WEIGHT_CO_ATTESTED = 0.5;
  * still-pending named party is not yet evidence_committed even if its
  * confirmed parties committed hashes, so it earns the co-attested weight until
  * it fully settles, exactly as its tier badge reads.
+ *
+ * `wireObserved` (Feature 1): a deal whose exchange reached wire_credit_observed
+ * (a countersigned, un-reversed WireCreditClaim) carries the SAME full weight as
+ * an evidence-committed deal. A mutually-attested inbound wire credit is at least
+ * as strong as a committed document hash, so it counts like evidence-committed
+ * for reputation. It is reverted the moment the credit is reversed (the caller
+ * passes wireObserved=false again), and, like the tier weight generally, it only
+ * changes what a counted dollar is WORTH, never whether its fee is owed.
  */
 export function tierValueWeight(
   rows: readonly {
@@ -100,12 +108,35 @@ export function tierValueWeight(
     status: "pending" | "confirmed" | "declined";
     evidenceHash: string | null;
   }[],
+  wireObserved = false,
 ): number {
   const named = rows.filter((r) => r.role === "participant");
   const confirmed = named.filter((r) => r.status === "confirmed");
   if (confirmed.length === 0) return 0;
+  if (wireObserved) return WEIGHT_EVIDENCE_COMMITTED;
   const tier: DealTier = deriveTier(rows);
   return tier === "evidence_committed" ? WEIGHT_EVIDENCE_COMMITTED : WEIGHT_CO_ATTESTED;
+}
+
+/**
+ * The deal ids whose exchange reached wire_credit_observed: at least one
+ * exchange session on the deal whose LATEST WireCreditClaim event is a buyer
+ * countersign (observed) and not a later reversal. This is the verified-payment
+ * signal the reputation weight above upgrades on; a reversal appends a later
+ * wire_reversed event, so the deal simply drops out of this set and the weight
+ * reverts. Server-only, one query.
+ */
+export async function wireObservedDealIds(): Promise<Set<string>> {
+  const db = await getDb();
+  const rs = await db.execute(
+    `SELECT DISTINCT s.deal_id AS deal_id
+       FROM exchange_sessions s
+       JOIN exchange_wire_claims w ON w.session_id = s.id
+      WHERE w.seq = (SELECT MAX(w2.seq) FROM exchange_wire_claims w2
+                      WHERE w2.session_id = s.id)
+        AND w.type = 'wire_credit_countersign'`,
+  );
+  return new Set(rs.rows.map((r) => String(r.deal_id)));
 }
 
 export type LeaderboardSortKey =
@@ -209,6 +240,10 @@ export async function computeLeaderboard(): Promise<LeaderboardStats> {
        JOIN users u ON u.id = p.user_id`,
   );
 
+  // Deals whose exchange reached wire_credit_observed: those count like
+  // evidence-committed for the reputation weight (Feature 1), reverted on reversal.
+  const wireObserved = await wireObservedDealIds();
+
   const byDeal = new Map<string, Row[]>();
   // Account ages, for the sybil-independence test (lib/independence.ts).
   const createdAt = new Map<string, number>();
@@ -287,8 +322,10 @@ export async function computeLeaderboard(): Promise<LeaderboardStats> {
     const rep = acc(reporter.userId, reporter.username);
 
     // The reputation weight for every dollar this deal contributes: 1.0 at
-    // evidence-committed, 0.5 at co-attested, 0 with no confirmed counterparty.
-    const weight = tierValueWeight(rows);
+    // evidence-committed (or wire_credit_observed), 0.5 at co-attested, 0 with no
+    // confirmed counterparty.
+    const dealId = reporter.dealId;
+    const weight = tierValueWeight(rows, wireObserved.has(dealId));
 
     // (a) pair events and (b) value to others: confirmed counterparties only,
     // tier-weighted. A confirmer that is sybil-dependent on the reporter and

@@ -423,6 +423,7 @@ test("09 THE PRIVACY CLAIM: no PII string appears in any row of any table", asyn
     "deals",
     "exchange_events",
     "exchange_sessions",
+    "exchange_wire_claims",
     "hidden_asks",
     "invite_edges",
     "invites",

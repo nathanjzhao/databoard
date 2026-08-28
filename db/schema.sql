@@ -983,3 +983,59 @@ CREATE TABLE IF NOT EXISTS exchange_events (
   PRIMARY KEY (session_id, seq)
 );
 
+-- ---------------------------------------------------------------------------
+-- exchange_wire_claims  (WireCreditClaim: mutual proof-of-payment, Feature 1)
+--
+-- The exchange's pay step is no longer a self-reported signal. After the buyer
+-- posts its PAYMENT_SENT_COMMIT (the payment_signaled exchange event: a salted
+-- hash of its wire confirmation + amount bucket + the deal's N15 reference), a
+-- THREE-PARTY claim rides here before the seller may reveal the key:
+--   1. wire_credit_claim        the seller, having observed the inbound credit,
+--                               signs the canonical WireCreditClaim plus a
+--                               salted commitment to its receiving-bank record;
+--   2. wire_credit_countersign  the buyer countersigns that exact claim. This
+--                               is the terminal HONEST state, wire_credit_observed:
+--                               a payment with this reference was SENT and
+--                               OBSERVED, NOT proof a bank irrevocably credited
+--                               it. The DEK reveal is gated on reaching it.
+--   3. wire_reversed            a later event either party appends when the
+--                               credit is returned / frozen / recalled. It
+--                               reopens the deal and reverts the weighting.
+--
+-- This is a SEPARATE TABLE from exchange_events on purpose: that table's type
+-- and the session's state carry CHECK constraints that predate this feature,
+-- and the schema is applied additively (CREATE ... IF NOT EXISTS; new tables,
+-- never altered columns), so the new steps could not be new enum values on the
+-- old columns without silently failing on a database created before them. Each
+-- row is still a hash-linked, Ed25519-signed leaf (lib/exchange.ts): seq 1's
+-- prev_hash is the payment_signaled event's hash (binding this chain to the
+-- exchange chain it hangs off), and each later prev_hash is the prior wire
+-- event's hash.
+--
+-- WHAT THIS ROW HOLDS, and nothing more: two party ids and their pinned signing
+-- pubkeys (echoed on each leaf), the wire RAIL word, a $10k AMOUNT BUCKET (never
+-- an exact figure), a terminal bank STATUS word, a day-granular value time, and
+-- COMMITMENTS: the N15 reference, a salted bank-record commitment, a seller-bound
+-- account nullifier (a hash that links a seller's receiving account across their
+-- deals without revealing it), and H(IMAD/UETR). No bank name, no account number,
+-- no routing number, no wire receipt: those are hashed in the browser and never
+-- reach the server. HONEST BOUND, stated here and on /transparency/verification:
+-- this is MUTUAL ATTESTATION that a referenced payment was sent and observed, not
+-- cryptographic proof the bank credited it. That proof is Feature 2 (lib/payproof).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS exchange_wire_claims (
+  session_id    TEXT    NOT NULL REFERENCES exchange_sessions(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,          -- 1-based within the session's wire chain
+  type          TEXT    NOT NULL           -- wire_credit_claim | wire_credit_countersign | wire_reversed
+                  CHECK (type IN ('wire_credit_claim','wire_credit_countersign','wire_reversed')),
+  actor_role    TEXT    NOT NULL CHECK (actor_role IN ('seller','buyer')),
+  actor_user_id TEXT    NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  prev_hash     TEXT    NOT NULL,          -- payment_signaled event_hash for seq 1, else prior wire event_hash
+  payload_json  TEXT    NOT NULL,          -- canonical JSON of the signed leaf (commitments + buckets only)
+  event_hash    TEXT    NOT NULL,          -- SHA-256(payload_json), hex
+  signer_pubkey TEXT    NOT NULL,          -- base64url Ed25519 public key that signed (the acting role's pinned key)
+  signature     TEXT    NOT NULL,          -- base64url Ed25519 signature over payload_json
+  created_at    INTEGER NOT NULL,
+  PRIMARY KEY (session_id, seq)
+);
+

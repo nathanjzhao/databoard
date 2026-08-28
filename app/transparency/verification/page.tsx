@@ -478,10 +478,49 @@ export default function VerificationPage() {
         <TSection
           id="payment"
           num="06"
-          title="Planned: payment rails"
-          lede="The next rung up is money: independent evidence that funds posted or were released, bound to one specific deal. Nothing in this section is built. Time estimates are engineering guesses that exclude vendor approval, security audits, and legal review, which is where such estimates usually go to die."
+          title="Payment: mutual attestation now, independent proof planned"
+          lede="The pay step of the exchange is no longer a self-reported click. It is a three-party WireCreditClaim: the buyer commits that it sent a wire carrying this deal's reference, the seller attests it observed the inbound credit, and the buyer countersigns. That is built. What is still planned is the rung above it: independent evidence, from a bank or a zk proof, that the money actually posted. Time estimates below are engineering guesses that exclude vendor approval, security audits, and legal review, which is where such estimates usually go to die."
         >
-          <MechanismList items={PAYMENT_MECHANISMS} />
+          <div className="border-l-2 border-green bg-green-wash px-4 py-3.5">
+            <div className="bt-label text-green">Built: the WireCreditClaim pay step</div>
+            <p className="mt-2 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Real data buyers pay by wire, not crypto, so the exchange&apos;s pay
+              step is a mutual proof-of-payment. The seller mints a 128-bit deal
+              nonce and shows the buyer a rail-safe alias{" "}
+              <span className="font-mono text-[0.75rem]">N15</span> (the first 15
+              Crockford-Base32 chars of SHA-256(dealId, nonce)) to put in the
+              wire&apos;s End-to-End ID and remittance text. The buyer signs
+              PAYMENT_SENT, a salted hash of its wire confirmation, the amount
+              bucket and N15, hashed in the browser so the receipt never uploads.
+              The seller, once it sees the inbound credit, signs a WireCreditClaim
+              binding the reference, the amount bucket, the terminal bank status,
+              the value time, a salted commitment to its bank record, a
+              seller-bound account nullifier and H(IMAD/UETR). The buyer
+              countersigns. Only then does the seller reveal the key. Each step is
+              Ed25519-signed and hash-linked, and the server stores commitments,
+              signatures and buckets only, never a bank name, an account number,
+              or a wire receipt.
+            </p>
+            <p className="mt-2 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Read honestly what it is worth. The terminal state is{" "}
+              <span className="font-mono text-[0.75rem]">wire_credit_observed</span>,
+              not <span className="font-mono text-[0.75rem]">fiat_final</span>. It
+              is mutual attestation that a payment with this reference was sent and
+              observed, not cryptographic proof a bank irrevocably credited it: an
+              accepted wire can still be returned, frozen, or recalled, so either
+              party can append a <span className="font-mono text-[0.75rem]">wire_reversed</span>{" "}
+              event that reopens the deal. A countersigned, un-reversed
+              wire_credit_observed deal feeds the verified-amount weighting the
+              same as an evidence-committed deal (it counts at full weight for
+              reputation, above bare co-attestation), and a reversal reverts that.
+              The rung that turns this from mutual attestation into independent
+              proof is below, and it is not built.
+            </p>
+          </div>
+
+          <div className="mt-6">
+            <MechanismList items={PAYMENT_MECHANISMS} />
+          </div>
 
           <p className="mt-4 max-w-[64ch] text-[0.8125rem] leading-relaxed text-ink-faint">
             The engineering path for the first of these rungs is written down
@@ -513,14 +552,25 @@ export default function VerificationPage() {
               payment between two distrusting parties is impossible without a
               blockchain or an escrow agent (Pagnia-Gaertner reduces it to
               consensus). So this bounds and evidences cheating, it does not make
-              the trade atomic: the last mover can still stop, and the payment
-              step is a self-reported commitment, not proof money moved. The full
-              trust ladder, including the on-chain Tier B that would add real
-              atomicity and the Stripe Tier C that would make payment evidence
-              real, is in{" "}
+              the trade atomic: the last mover can still stop. The pay step is a
+              bilateral wire-credit claim, three-party mutual attestation that a
+              wire carrying the deal&apos;s reference was sent and observed. That
+              is honest evidence, not proof a bank credited the money, and a
+              credit can still be reversed, so the state it earns is
+              &quot;wire credit observed&quot;, never &quot;fiat final&quot;.
+            </p>
+            <p className="mt-3 max-w-[64ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+              Proof-of-payment is therefore mutual-attested today, and verifiable
+              proof is planned: a zkTLS proof against the receiving bank, verified
+              in the buyer&apos;s browser with the platform logging only its hash
+              and the buyer&apos;s acceptance. That seam is{" "}
+              <span className="font-mono text-[0.75rem]">lib/payproof.ts</span>,
+              inert until a verifier is configured. The full fiat ladder, F1 the
+              wire-credit claim through F2 the bank proof to F3 licensed escrow or
+              an invisible on-chain bridge, none of which lets us custody funds, is
+              in <span className="font-mono text-[0.75rem]">docs/SETTLEMENT.md</span>;
+              the dataset-side tiers are in{" "}
               <span className="font-mono text-[0.75rem]">docs/EXCHANGE.md</span>.
-              This payment rung is exactly the piece that turns the self-reported
-              payment step into evidence.
             </p>
           </div>
 

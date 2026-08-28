@@ -101,6 +101,27 @@ export const EXCHANGE_VERSION = 1 as const;
 const DEK_COMMIT_DOMAIN = "databoard-exchange-dek-v1";
 /** Domain separator for the payment-reference commitment. */
 const PAYMENT_COMMIT_DOMAIN = "databoard-exchange-pay-v1";
+/**
+ * WireCreditClaim domain separators (Feature 1, the mutual proof-of-payment
+ * that replaces the self-reported pay step). Every one of these is a SALTED
+ * SHA-256 the browser computes over a file or bank record the server never
+ * receives, so the log holds a commitment, never the underlying document or a
+ * bank/account number.
+ */
+/** Buyer's PAYMENT_SENT_COMMIT: salted hash of (wire confirmation file || amount bucket || N15). */
+const WIRE_SENT_COMMIT_DOMAIN = "databoard-wire-sent-v1";
+/** Seller's salted commitment to its receiving-bank record. */
+const WIRE_RECORD_COMMIT_DOMAIN = "databoard-wire-record-v1";
+/** Seller-bound hidden recipient-account nullifier: salted hash of the receiving account. */
+const WIRE_ACCOUNT_NULLIFIER_DOMAIN = "databoard-wire-acct-v1";
+/** H(IMAD/UETR): salted hash of the wire's rail-unique end-to-end id. */
+const WIRE_UETR_COMMIT_DOMAIN = "databoard-wire-uetr-v1";
+/** Commitment to the 128-bit wire-reference nonce that derives N15. */
+const WIRE_NONCE_COMMIT_DOMAIN = "databoard-wire-nonce-v1";
+/** Commitment to a reversal advice (the bank return/recall notice). */
+const WIRE_REVERSAL_COMMIT_DOMAIN = "databoard-wire-reversal-v1";
+/** Evidence/schema version the WireCreditClaim predicate is pinned to. */
+export const WIRE_CLAIM_VERSION = 1 as const;
 /** Info label prefixed to every AEAD chunk's AAD, binding it to its session. */
 const CHUNK_AAD_PREFIX = "databoard-exchange-v1/chunk/";
 
@@ -142,6 +163,44 @@ export type ExchangeEventType =
   | "dek_revealed"
   | "completed"
   | "abort";
+
+/**
+ * The WireCreditClaim sub-protocol (Feature 1) rides BETWEEN payment_signaled
+ * (the buyer's PAYMENT_SENT_COMMIT) and dek_revealed. It is a three-party
+ * mutual attestation that a wire carrying this deal's reference was sent and
+ * OBSERVED as an inbound credit, and it lives in its own hash-linked chain
+ * (exchange_wire_claims) anchored to the payment_signaled event. It is NOT in
+ * exchange_events, because that table's type/state CHECK constraints predate
+ * this feature and the schema is applied additively (new tables, never altered
+ * columns). Each leaf is still an Ed25519-signed SignableLeaf, signed with the
+ * same identity key as every other step.
+ *
+ *   wire_credit_claim        seller signs the canonical claim + a salted
+ *                            commitment to its receiving-bank record, after
+ *                            observing the inbound credit.
+ *   wire_credit_countersign  buyer countersigns that exact claim. This is the
+ *                            terminal HONEST state: wire_credit_observed, which
+ *                            means "a payment with this reference was sent and
+ *                            observed", NOT that a bank irrevocably credited it.
+ *   wire_reversed            a later event either party appends when the credit
+ *                            is returned / frozen / recalled. It reopens the
+ *                            deal and reverts the verified-amount weighting.
+ */
+export type WireClaimType =
+  | "wire_credit_claim"
+  | "wire_credit_countersign"
+  | "wire_reversed";
+
+/** The derived wire-credit sub-state of a session's payment phase. */
+export type WireStatus = "pending" | "claimed" | "observed" | "reversed";
+
+/** The terminal bank statuses the claim is allowed to assert (never "final"). */
+export const WIRE_TERMINAL_STATUSES = [
+  "credit_observed",
+  "credit_posted",
+  "credit_accepted",
+] as const;
+export type WireTerminalStatus = (typeof WIRE_TERMINAL_STATUSES)[number];
 
 /* --------------------------------------------------------------- helpers */
 
@@ -461,18 +520,37 @@ export type ExchangeLeaf = {
   data: Record<string, unknown>;
 };
 
+/**
+ * The common shape every signed leaf shares: the exchange steps (ExchangeLeaf)
+ * and the WireCreditClaim steps (WireClaimLeaf) both satisfy it, so one set of
+ * hashing/signing/verifying functions serves both chains. `type` is a bare
+ * string here on purpose; each chain validates its own type vocabulary.
+ */
+export type SignableLeaf = {
+  v: typeof EXCHANGE_VERSION;
+  sessionId: string;
+  dealId: string;
+  seq: number;
+  type: string;
+  actorRole: ExchangeRole;
+  actor: string;
+  prevHash: string;
+  ts: number;
+  data: Record<string, unknown>;
+};
+
 /** The canonical bytes of a leaf: the exact bytes that are hashed and signed. */
-export function leafBytes(leaf: ExchangeLeaf): string {
+export function leafBytes(leaf: SignableLeaf): string {
   return canonicalJson(leaf);
 }
 
 /** eventHash = SHA-256(canonical leaf bytes), hex. This is what the next event links to. */
-export function eventHash(leaf: ExchangeLeaf): string {
+export function eventHash(leaf: SignableLeaf): string {
   return bytesToHex(sha256(utf8ToBytes(leafBytes(leaf))));
 }
 
 /** Sign a leaf with an Ed25519 secret seed. Returns a base64url signature over the canonical bytes. */
-export function signLeaf(leaf: ExchangeLeaf, secretKey: Uint8Array): string {
+export function signLeaf(leaf: SignableLeaf, secretKey: Uint8Array): string {
   return toB64url(ed25519.sign(utf8ToBytes(leafBytes(leaf)), secretKey));
 }
 
@@ -483,7 +561,7 @@ export function isSigningPubkey(s: unknown): s is string {
 
 /** Verify a leaf's signature against a base64url Ed25519 public key. Never throws. */
 export function verifyLeafSignature(
-  leaf: ExchangeLeaf,
+  leaf: SignableLeaf,
   signatureB64: string,
   publicKeyB64: string,
 ): boolean {
@@ -683,6 +761,285 @@ export function verifyChain(
       if (!t.ok) return { ok: false, error: `illegal_transition:${t.error}`, seq: e.seq };
       state = t.to;
     }
+    prev = e.eventHash;
+  }
+  return { ok: true };
+}
+
+/* ============================================================ WireCreditClaim
+ *
+ * Feature 1: the mutual proof-of-payment that upgrades the exchange's pay step
+ * from a self-reported signal to a three-party attestation. See the WireClaimType
+ * comment above for the state machine and the honesty bound (wire_credit_observed
+ * is NOT fiat_final). Everything below is isomorphic: it runs in the browser to
+ * build and sign the leaves, and on the server to re-verify them.
+ */
+
+/* --------------------------------------------------- wire-reference nonce */
+
+/** Crockford Base32 alphabet: excludes I, L, O, U so a reference is transcription-safe. */
+const CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/** Encode bytes as uppercase Crockford Base32, no padding. 32-bit safe. */
+export function crockford32(bytes: Uint8Array): string {
+  let out = "";
+  let value = 0;
+  let bits = 0;
+  for (const b of bytes) {
+    value = ((value & 0x1f) << 8) | b;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out += CROCKFORD32[(value >>> bits) & 31];
+    }
+  }
+  if (bits > 0) out += CROCKFORD32[(value << (5 - bits)) & 31];
+  return out;
+}
+
+/** A fresh 128-bit wire-reference nonce, kept on the seller's device. */
+export function wireNonce(): Uint8Array {
+  return randomBytes(16);
+}
+
+/**
+ * N15: the rail-safe alias the buyer puts in the wire. First 15 Crockford-Base32
+ * chars of SHA-256(dealId || nonce), UPPERCASE ASCII, no spaces. Short enough for
+ * a Fedwire/CHIPS/SWIFT EndToEndId (~35) and an ACH id (15), and opaque, so the
+ * bank memo carries a reference, not the deal.
+ */
+export function n15Of(dealId: string, nonce: Uint8Array): string {
+  return crockford32(sha256(concat(utf8ToBytes(dealId), nonce))).slice(0, 15);
+}
+
+/** True for a well-formed N15: 15 uppercase Crockford-Base32 chars. */
+const N15_RE = /^[0-9A-HJKMNP-TV-Z]{15}$/;
+export function isN15(s: unknown): s is string {
+  return typeof s === "string" && N15_RE.test(s);
+}
+
+/** Commitment to the wire nonce: SHA-256(domain || dealId || salt || nonce), hex. */
+export function wireNonceCommitHex(dealId: string, salt: Uint8Array, nonce: Uint8Array): string {
+  return bytesToHex(
+    sha256(concat(utf8ToBytes(WIRE_NONCE_COMMIT_DOMAIN + "\x1f" + dealId + "\x1f"), salt, nonce)),
+  );
+}
+
+/* --------------------------------------------------- wire commitments */
+
+/**
+ * The buyer's PAYMENT_SENT_COMMIT: SHA-256(domain || salt || amountBucket || N15
+ * || wire confirmation file bytes). The file (a wire receipt PDF/image) is hashed
+ * in the browser and NEVER uploaded; the salt keeps the commitment from being a
+ * dictionary of receipts. Binds the sent proof to this exact reference and bucket.
+ */
+export function wireSentCommitHex(
+  salt: Uint8Array,
+  amountBucket: string,
+  n15: string,
+  fileBytes: Uint8Array,
+): string {
+  return bytesToHex(
+    sha256(
+      concat(
+        utf8ToBytes(WIRE_SENT_COMMIT_DOMAIN + "\x1f" + amountBucket + "\x1f" + n15 + "\x1f"),
+        salt,
+        fileBytes,
+      ),
+    ),
+  );
+}
+
+/** Seller's salted commitment to its receiving-bank record (the credit advice bytes). */
+export function wireRecordCommitHex(salt: Uint8Array, recordBytes: Uint8Array): string {
+  return bytesToHex(
+    sha256(concat(utf8ToBytes(WIRE_RECORD_COMMIT_DOMAIN + "\x1f"), salt, recordBytes)),
+  );
+}
+
+/**
+ * The seller-bound hidden recipient-account nullifier: SHA-256(domain || sellerHandle
+ * || account). Deterministic per (seller, account) so the SAME receiving account is
+ * linkable across a seller's deals (a soft anti-sybil signal) without ever revealing
+ * the account number. No random salt on purpose: the linkability IS the point.
+ */
+export function accountNullifierHex(sellerHandle: string, account: string): string {
+  return bytesToHex(
+    sha256(utf8ToBytes(WIRE_ACCOUNT_NULLIFIER_DOMAIN + "\x1f" + sellerHandle + "\x1f" + account)),
+  );
+}
+
+/** H(IMAD/UETR): salted hash of the wire's rail-unique end-to-end id. Never the raw id. */
+export function uetrCommitHex(salt: Uint8Array, uetr: string): string {
+  return bytesToHex(
+    sha256(concat(utf8ToBytes(WIRE_UETR_COMMIT_DOMAIN + "\x1f"), salt, utf8ToBytes(uetr))),
+  );
+}
+
+/** Salted commitment to a reversal advice (bank return/recall notice bytes). */
+export function wireReversalCommitHex(salt: Uint8Array, adviceBytes: Uint8Array): string {
+  return bytesToHex(
+    sha256(concat(utf8ToBytes(WIRE_REVERSAL_COMMIT_DOMAIN + "\x1f"), salt, adviceBytes)),
+  );
+}
+
+/* --------------------------------------------------- wire leaf + chain */
+
+/** A signed WireCreditClaim leaf: structurally a SignableLeaf with a WireClaimType. */
+export type WireClaimLeaf = SignableLeaf & { type: WireClaimType };
+
+/** A stored wire-claim event, as the read API returns it and verifyWireChain consumes it. */
+export type StoredWireEvent = {
+  seq: number;
+  type: WireClaimType;
+  actorRole: ExchangeRole;
+  actor: string;
+  prevHash: string;
+  ts: number;
+  data: Record<string, unknown>;
+  eventHash: string;
+  signerPubkey: string;
+  signature: string;
+};
+
+const MAX_WIRE_REASON = 200;
+
+/**
+ * The required predicate for each wire step. The server and the browser both
+ * enforce it; a step whose data omits a bound field is refused, so a claim
+ * cannot silently drop the amount, the reference, or the account nullifier.
+ */
+export function isValidWireData(type: WireClaimType, data: unknown): boolean {
+  if (data === null || typeof data !== "object") return false;
+  const d = data as Record<string, unknown>;
+  switch (type) {
+    case "wire_credit_claim":
+      // The canonical WireCreditClaim: deal reference + WIRE + CREDIT + amount
+      // bucket + terminal bank status + value time + account nullifier +
+      // H(IMAD/UETR) + salted bank-record commitment + schema version.
+      return (
+        isN15(d.n15) &&
+        typeof d.rail === "string" &&
+        (d.rail as string).length > 0 &&
+        typeof d.amountBucket === "string" &&
+        (d.amountBucket as string).length > 0 &&
+        typeof d.terminalStatus === "string" &&
+        (WIRE_TERMINAL_STATUSES as readonly string[]).includes(d.terminalStatus as string) &&
+        Number.isInteger(d.valueTime) &&
+        (d.valueTime as number) > 0 &&
+        isHash64(d.bankRecordCommit) &&
+        isHash64(d.accountNullifier) &&
+        isHash64(d.uetrCommit) &&
+        d.schemaVersion === WIRE_CLAIM_VERSION
+      );
+    case "wire_credit_countersign":
+      return isHash64(d.claimHash) && isN15(d.n15) && d.accept === true;
+    case "wire_reversed":
+      return (
+        isHash64(d.claimHash) &&
+        typeof d.reason === "string" &&
+        (d.reason as string).length > 0 &&
+        (d.reason as string).length <= MAX_WIRE_REASON &&
+        (d.reversalCommit === undefined || isHash64(d.reversalCommit))
+      );
+  }
+}
+
+export type WireTransitionCheck =
+  | { ok: true; to: WireStatus }
+  | { ok: false; error: "illegal_type" | "wrong_role" | "bad_state" };
+
+/**
+ * The wire sub-state machine. It starts at "pending" the moment the buyer's
+ * payment_signaled lands, and:
+ *   pending  --wire_credit_claim(seller)-->        claimed
+ *   claimed  --wire_credit_countersign(buyer)-->   observed
+ *   observed --wire_reversed(either)-->            reversed
+ *   reversed --wire_credit_claim(seller)-->        claimed   (a re-attempt)
+ * A reversal is legal from observed only: there is nothing to reverse before a
+ * credit was mutually observed.
+ */
+export function resolveWireTransition(
+  status: WireStatus,
+  type: WireClaimType,
+  role: ExchangeRole,
+): WireTransitionCheck {
+  switch (type) {
+    case "wire_credit_claim":
+      if (status !== "pending" && status !== "reversed") return { ok: false, error: "bad_state" };
+      if (role !== "seller") return { ok: false, error: "wrong_role" };
+      return { ok: true, to: "claimed" };
+    case "wire_credit_countersign":
+      if (status !== "claimed") return { ok: false, error: "bad_state" };
+      if (role !== "buyer") return { ok: false, error: "wrong_role" };
+      return { ok: true, to: "observed" };
+    case "wire_reversed":
+      if (status !== "observed") return { ok: false, error: "bad_state" };
+      return { ok: true, to: "reversed" };
+  }
+}
+
+/** The wire sub-state a chain of wire events implies. Empty chain = pending. */
+export function wireStatusFrom(events: readonly { type: WireClaimType }[]): WireStatus {
+  let status: WireStatus = "pending";
+  for (const e of events) {
+    const t = resolveWireTransition(status, e.type, e.type === "wire_credit_claim" ? "seller" : "buyer");
+    if (t.ok) status = t.to;
+  }
+  return status;
+}
+
+/** Rebuild a wire leaf from a stored wire event (the exact object that was signed). */
+export function wireLeafOf(sessionId: string, dealId: string, e: StoredWireEvent): WireClaimLeaf {
+  return {
+    v: EXCHANGE_VERSION,
+    sessionId,
+    dealId,
+    seq: e.seq,
+    type: e.type,
+    actorRole: e.actorRole,
+    actor: e.actor,
+    prevHash: e.prevHash,
+    ts: e.ts,
+    data: e.data,
+  };
+}
+
+/**
+ * Verify a wire-claim chain the way a client or auditor re-checks it: contiguous
+ * seqs from 1, the first event anchored to the payment_signaled event's hash
+ * (so the wire chain is cryptographically bound to the exchange chain it hangs
+ * off), each prevHash linking to the prior eventHash, each stored eventHash
+ * matching the recomputed leaf, each signature verifying, each transition legal,
+ * and each countersign/reversal naming the exact claim it acts on. Does not check
+ * pubkey ownership (the server does that at append time).
+ */
+export function verifyWireChain(
+  sessionId: string,
+  dealId: string,
+  anchorHash: string,
+  events: StoredWireEvent[],
+): ChainCheck {
+  let status: WireStatus = "pending";
+  let prev = anchorHash;
+  let lastClaimHash: string | null = null;
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    if (e.seq !== i + 1) return { ok: false, error: "seq_gap", seq: e.seq };
+    if (e.prevHash !== prev) return { ok: false, error: "prev_hash_mismatch", seq: e.seq };
+    if (!isValidWireData(e.type, e.data)) return { ok: false, error: "bad_data", seq: e.seq };
+    const leaf = wireLeafOf(sessionId, dealId, e);
+    if (eventHash(leaf) !== e.eventHash) return { ok: false, error: "event_hash_mismatch", seq: e.seq };
+    if (!verifyLeafSignature(leaf, e.signature, e.signerPubkey)) {
+      return { ok: false, error: "bad_signature", seq: e.seq };
+    }
+    const t = resolveWireTransition(status, e.type, e.actorRole);
+    if (!t.ok) return { ok: false, error: `illegal_transition:${t.error}`, seq: e.seq };
+    if (e.type === "wire_credit_claim") lastClaimHash = e.eventHash;
+    else if (e.data.claimHash !== lastClaimHash) {
+      return { ok: false, error: "claim_hash_mismatch", seq: e.seq };
+    }
+    status = t.to;
     prev = e.eventHash;
   }
   return { ok: true };

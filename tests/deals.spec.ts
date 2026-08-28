@@ -1002,6 +1002,7 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     "deals",
     "exchange_events",
     "exchange_sessions",
+    "exchange_wire_claims",
     "hidden_asks",
     "invite_edges",
     "invites",

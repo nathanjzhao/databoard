@@ -55,6 +55,8 @@ const KNOWN_ORDER = [
   // trips the FK.
   "exchange_sessions",
   "exchange_events",
+  // exchange_wire_claims -> exchange_sessions(id); load after sessions.
+  "exchange_wire_claims",
   "ops_errors",
   // The transparency log. translog_leaves is the parent; translog_events
   // carries a FOREIGN KEY to translog_leaves(seq), so leaves must load first.
