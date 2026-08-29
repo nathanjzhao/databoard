@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { deriveIdentityKeys, signingKeysFromSeed } from "@/lib/e2ee";
-import { saveKeys } from "@/components/messages/keystore";
+import { primeKdfSalt, saveKeys } from "@/components/messages/keystore";
 
 /**
  * After the server accepts the password, the browser re-derives BOTH the E2EE
@@ -15,9 +15,17 @@ import { saveKeys } from "@/components/messages/keystore";
  * steps. Both registrations are write-once server-side, so a differing stored
  * key is never overwritten; the client flags a mismatch instead.
  */
-async function establishEncryptionKeys(username: string, password: string) {
+async function establishEncryptionKeys(
+  username: string,
+  password: string,
+  kdfSalt?: string,
+) {
   try {
-    const keys = await deriveIdentityKeys(username, password);
+    // The per-user KDF salt the login response just delivered (F-01): the keys
+    // are derived under it, so the published public key is not a pure function
+    // of (password, handle). Cached for this tab's later unlock/sign flows.
+    primeKdfSalt(username, kdfSalt);
+    const keys = await deriveIdentityKeys(username, password, kdfSalt);
     const res = await fetch("/api/e2ee/pubkey", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -79,7 +87,7 @@ export function LoginForm() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Sign in failed.");
-      await establishEncryptionKeys(username.trim().toLowerCase(), password);
+      await establishEncryptionKeys(username.trim().toLowerCase(), password, data.kdfSalt);
       // Hard navigation: a session just began, so every cached RSC payload is
       // stale. router.refresh() + push() race each other here (the push can
       // win and render the board logged-out from the router cache).

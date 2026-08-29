@@ -198,15 +198,70 @@ const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const SCRYPT_KEYLEN = 32;
 
-export const MIN_PASSWORD_LENGTH = 10;
+export const MIN_PASSWORD_LENGTH = 14;
 
-/** Null when the password is acceptable, a human-readable reason otherwise. */
+/**
+ * A small set of obviously-guessable passwords, normalized to lowercase
+ * alphanumerics. This is not a breach corpus (that would need a service and a
+ * data file); it is a floor against the handful of strings a casual attacker
+ * tries first. The real defense is length + a passphrase; the durable defense
+ * against the offline oracle is the per-user KDF salt (lib/e2ee.ts).
+ */
+const WEAK_PASSWORDS = new Set([
+  "password",
+  "passwordpassword",
+  "passw0rd",
+  "letmein",
+  "letmeinletmein",
+  "iloveyou",
+  "welcome",
+  "welcomewelcome",
+  "welcome123",
+  "changeme",
+  "changemenow",
+  "adminadmin",
+  "administrator",
+  "qwerty",
+  "qwertyuiop",
+  "qwertyuiopasdfgh",
+  "azerty",
+  "1234567890",
+  "12345678901234",
+  "123456789012345",
+  "0123456789",
+  "abcdefghijklmn",
+  "abcdefghijklmnop",
+]);
+
+function distinctChars(p: string): number {
+  return new Set(p).size;
+}
+
+/**
+ * Null when the password is acceptable, a human-readable reason otherwise.
+ *
+ * The floor is deliberately above a short word or two: the signing/e2ee public
+ * keys are derived from this password, and a public per-handle key directory
+ * plus a weak password is an offline cracking target (F-01). The entropy check
+ * is intentionally lenient so the app's own advice ("a sentence works") stays
+ * true: a multi-word passphrase always passes; only very short, very
+ * repetitive, or textbook-weak strings are refused.
+ */
 export function passwordProblem(raw: string): string | null {
   const p = raw ?? "";
   if (p.length < MIN_PASSWORD_LENGTH) {
-    return `At least ${MIN_PASSWORD_LENGTH} characters. A sentence works.`;
+    return `At least ${MIN_PASSWORD_LENGTH} characters. A short sentence or passphrase works.`;
   }
   if (p.length > 200) return "200 characters max.";
+  // A single character repeated ("aaaaaaaaaaaaaa") or a tiny alphabet
+  // ("ababab...") is long but trivially guessable.
+  if (distinctChars(p) < 6) {
+    return "Too repetitive. Use a longer passphrase with more variety.";
+  }
+  const normalized = p.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (WEAK_PASSWORDS.has(normalized) || WEAK_PASSWORDS.has(p.toLowerCase())) {
+    return "That is a commonly guessed password. Pick a private passphrase.";
+  }
   return null;
 }
 

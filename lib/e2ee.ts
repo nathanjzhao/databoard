@@ -10,15 +10,27 @@
  * The design, in full:
  *
  *   Identity keys.  An X25519 keypair derived CLIENT-SIDE from the user's
- *   password: seed = scrypt(password, "databoard-e2ee-v1:" + username,
- *   N=2^15, r=8, p=1, 32 bytes), private key = clamp(seed), public key =
- *   X25519 base point mult. The public half is uploaded once at signup and
- *   is write-once server-side. The private half is recomputed at login and
- *   lives in sessionStorage for the tab, never sent anywhere. Passwords are
- *   unchangeable here (no recovery exists), so the derivation is stable for
- *   the life of the account. The server's password_hash uses scrypt with a
- *   random per-user salt (lib/crypto.ts), a disjoint salt domain, so the
+ *   password: seed = scrypt(password, "databoard-e2ee-v1:" + username [+
+ *   0x1f + kdfSalt], N=2^15, r=8, p=1, 32 bytes), private key = clamp(seed),
+ *   public key = X25519 base point mult. The public half is uploaded once at
+ *   signup and is write-once server-side. The private half is recomputed at
+ *   login and lives in sessionStorage for the tab, never sent anywhere.
+ *   Passwords are unchangeable here (no recovery exists), so the derivation is
+ *   stable for the life of the account. The server's password_hash uses scrypt
+ *   with a random per-user salt (lib/crypto.ts), a disjoint salt domain, so the
  *   two derivations can never produce related output.
+ *
+ *   kdfSalt is a high-entropy, server-held, per-user value (user_kdf_salt)
+ *   handed to the client ONLY inside that user's own authenticated login /
+ *   signup response, i.e. only after the password check. Folding it into the
+ *   scrypt salt means the published public key is no longer a pure function of
+ *   (password, handle): an attacker who fetches a handle's public key can no
+ *   longer brute-force the password offline, because the salt for that handle
+ *   is never served to them. It is optional here so the isomorphic callers
+ *   (scripts, tests, legacy pre-salt accounts) can still derive the original
+ *   unsalted keys; production login/signup always pass it. The derivation stays
+ *   deterministic per device: the salt is write-once, so every device re-fetches
+ *   the same bytes and derives the same keys.
  *
  *   Thread keys.  A random 32-byte AES-256-GCM key per thread, generated in
  *   the first participant's browser to open the thread, then wrapped for
@@ -118,7 +130,19 @@ export function toB64url(bytes: Uint8Array): string {
   return out;
 }
 
-/** base64url -> Uint8Array. Returns null on any character or length problem. */
+/**
+ * base64url -> Uint8Array. Returns null on any character, length, or
+ * NON-CANONICAL encoding.
+ *
+ * Canonicalization guard (N-01): a base64url string with non-zero trailing bits
+ * (e.g. a 43-char 32-byte key carries 258 bits, 2 of them unused) decodes to the
+ * same bytes as its canonical form, so two distinct strings could otherwise map
+ * to one key/sig/token. Every key, signature, token, nonce, wrap and ciphertext
+ * blob on the platform is produced by toB64url, so a canonical input always
+ * re-encodes to itself; we reject anything that does not, which keeps the STRING
+ * form of a value 1:1 with its bytes. Write-once key registration, dedup, and
+ * every equality/index check on the string form depend on that 1:1-ness.
+ */
 export function fromB64url(s: string): Uint8Array | null {
   if (typeof s !== "string" || s.length % 4 === 1) return null;
   const len = Math.floor((s.length * 3) / 4);
@@ -136,6 +160,8 @@ export function fromB64url(s: string): Uint8Array | null {
       out[j++] = (buffer >> bits) & 0xff;
     }
   }
+  // Reject any string that is not the unique canonical encoding of `out`.
+  if (toB64url(out) !== s) return null;
   return out;
 }
 
@@ -162,6 +188,41 @@ function concatBytes(...arrays: Uint8Array[]): Uint8Array {
 function randomBytes(n: number): Uint8Array {
   const out = new Uint8Array(n);
   globalThis.crypto.getRandomValues(out);
+  return out;
+}
+
+/** True when every byte is zero. OR-accumulated so it does not short-circuit. */
+function isAllZero(bytes: Uint8Array): boolean {
+  let acc = 0;
+  for (const b of bytes) acc |= b;
+  return acc === 0;
+}
+
+/**
+ * Domain-separated signing input: a length-delimited frame that binds a fixed
+ * context tag to canonical body bytes, so a signature made by one identity key
+ * in one context can never verify in another (N-02). Layout:
+ *
+ *   [tagLen: 1 byte] || tag (utf8) || body (utf8)
+ *
+ * The one length byte delimits the tag from the body with no reliance on a
+ * separator byte being absent from either, and the tag carries a "/vN" so a
+ * signing-format change is simply a new domain. The `body` is the explicit,
+ * key-sorted canonicalJson (lib/merkle.ts / lib/receipts.ts), identical in the
+ * browser and on the server; framing it this way replaces any dependence on
+ * incidental JSON ordering. SHARED by lib/receipt-attest.ts (receipt
+ * attestations) and lib/exchange.ts (exchange events, wire claims), which pass
+ * three DISJOINT tags; keep this helper the single definition so both sides
+ * frame byte-for-byte identically.
+ */
+export function domainSeparatedSigningBytes(tag: string, body: string): Uint8Array {
+  const tagBytes = utf8(tag);
+  if (tagBytes.length > 255) throw new Error("domain tag too long");
+  const bodyBytes = utf8(body);
+  const out = new Uint8Array(1 + tagBytes.length + bodyBytes.length);
+  out[0] = tagBytes.length;
+  out.set(tagBytes, 1);
+  out.set(bodyBytes, 1 + tagBytes.length);
   return out;
 }
 
@@ -228,19 +289,31 @@ export type IdentityKeys = {
 };
 
 /**
- * The one derivation. Same password + same username = same keypair, on any
- * device, forever, which is exactly the property an account with no
- * password changes and no recovery can honestly offer. The salt domain
- * ("databoard-e2ee-v1:" + username) shares nothing with the server-side
- * password hash, whose salt is 16 random bytes per user.
+ * The one derivation. Same password + same username [+ same server-delivered
+ * kdfSalt] = same keypair, on any device, forever, which is exactly the
+ * property an account with no password changes and no recovery can honestly
+ * offer. The salt domain ("databoard-e2ee-v1:" + username [+ 0x1f + kdfSalt])
+ * shares nothing with the server-side password hash, whose salt is 16 random
+ * bytes per user.
+ *
+ * kdfSalt (user_kdf_salt) is the per-user, server-held value handed to the
+ * client only inside its own authenticated login/signup response. Mixing it in
+ * is what stops the published public key from being a pure, offline-checkable
+ * function of (password, handle). It is optional so the isomorphic callers
+ * (scripts, tests, legacy pre-salt accounts) keep deriving the original keys;
+ * pass it wherever a real account's keys must match what login registered.
  */
 export async function deriveIdentityKeys(
   username: string,
   password: string,
+  kdfSalt?: string,
 ): Promise<IdentityKeys> {
+  const saltInput = kdfSalt
+    ? IDENTITY_SALT_PREFIX + username + "\x1f" + kdfSalt
+    : IDENTITY_SALT_PREFIX + username;
   const seed = await scryptAsync(
     utf8(password),
-    utf8(IDENTITY_SALT_PREFIX + username),
+    utf8(saltInput),
     { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P, dkLen: 32 },
   );
   // getPublicKey clamps the scalar per RFC 7748 before the base point mult.
@@ -271,12 +344,17 @@ export type SigningKeys = {
  * The signature use is public-key, not shared-secret: a receipt or an exchange
  * step signed with this key proves the NAMED PARTY attested, a thing the
  * platform (holding no private key) cannot forge.
+ *
+ * kdfSalt threads through to deriveIdentityKeys, so the signing key inherits
+ * the same per-user salting: a real account's signing key must be derived with
+ * the same kdfSalt that login registered, or it will not match the directory.
  */
 export async function deriveSigningKeys(
   username: string,
   password: string,
+  kdfSalt?: string,
 ): Promise<SigningKeys> {
-  const { secretKey: seed } = await deriveIdentityKeys(username, password);
+  const { secretKey: seed } = await deriveIdentityKeys(username, password, kdfSalt);
   return signingKeysFromSeed(seed, username);
 }
 
@@ -333,6 +411,10 @@ export async function wrapThreadKey(
     const ephSecret = x25519.utils.randomSecretKey();
     const ephPub = x25519.getPublicKey(ephSecret);
     const shared = x25519.getSharedSecret(ephSecret, recipientPub);
+    // Reject an all-zero shared secret: a low-order recipient key drives the
+    // ladder to zero, which noble already throws on, but check it explicitly so
+    // the guarantee does not silently rest on the library's internals.
+    if (isAllZero(shared)) return null;
     const wrapKey = wrapKdf(shared, ephPub, recipientPub);
     const nonce = randomBytes(NONCE_BYTES);
     const ct = await aesSeal(wrapKey, nonce, threadKey, utf8(KEY_AAD_PREFIX + threadId));
@@ -359,6 +441,8 @@ export async function unwrapThreadKey(
   try {
     const myPub = x25519.getPublicKey(mySecretKey);
     const shared = x25519.getSharedSecret(mySecretKey, ephPub);
+    // Reject an all-zero shared secret from a low-order ephemeral point (see wrap).
+    if (isAllZero(shared)) return null;
     const wrapKey = wrapKdf(shared, ephPub, myPub);
     const nonce = wrapped.slice(0, NONCE_BYTES);
     const ct = wrapped.slice(NONCE_BYTES);

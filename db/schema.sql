@@ -93,6 +93,39 @@ CREATE TABLE IF NOT EXISTS user_e2ee_keys (
 );
 
 -- ---------------------------------------------------------------------------
+-- user_kdf_salt
+--
+-- A high-entropy, server-held, per-user salt (32 random bytes, base64url) that
+-- is mixed into the CLIENT-side identity key derivation (lib/e2ee.ts) alongside
+-- the username. Its only job is to stop the published X25519 / Ed25519 public
+-- keys from being a pure, offline-computable function of (password, handle).
+--
+-- Why it exists: the signing/e2ee public keys are derived from the password by
+-- scrypt over a salt that used to be just "prefix + handle". Handles are public,
+-- so anyone who fetched a handle's public key held a free, offline verifier and
+-- could brute-force a weak password with no account and no server round trip.
+-- Folding this per-user salt into the derivation removes that: the salt is
+-- delivered to the client ONLY inside that user's own authenticated login /
+-- signup response (i.e. only after the password_hash check), and the salt for
+-- any OTHER handle is never served, so an attacker can no longer reconstruct a
+-- victim's key derivation offline.
+--
+-- It is NOT a secret in the password's sense (losing the password still loses
+-- the account; the salt alone reveals nothing and cannot recover anything), and
+-- it does NOT weaken the no-recovery / second-device property: the row is
+-- write-once, so every device that logs in re-fetches the same salt and derives
+-- the same deterministic keys. No PII: a user id, opaque random bytes, a
+-- timestamp. It is a NEW TABLE, not a column on users, because the schema is
+-- applied CREATE ... IF NOT EXISTS only; accounts created before it get a row on
+-- their next login (and, having no salt yet, re-register their keys once).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS user_kdf_salt (
+  user_id    TEXT    PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  salt       TEXT    NOT NULL,   -- base64url, 32 random bytes: per-user KDF salt
+  created_at INTEGER NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
 -- sessions
 --
 -- A session is a random 32-byte token. The browser holds the token in an

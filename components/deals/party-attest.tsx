@@ -17,7 +17,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { loadKeys } from "@/components/messages/keystore";
+import { fetchKdfSalt, loadKeys } from "@/components/messages/keystore";
 import { deriveSigningKeys } from "@/lib/e2ee";
 import {
   partySigningBase,
@@ -99,7 +99,10 @@ export function PartyAttest({
     e.preventDefault();
     setState({ kind: "signing" });
     try {
-      const signing = await deriveSigningKeys(viewerHandle, password);
+      // Under this account's per-user KDF salt (F-01), so the derived key is the
+      // registered one; a legacy account with no salt derives unsalted.
+      const kdfSalt = await fetchKdfSalt(viewerHandle);
+      const signing = await deriveSigningKeys(viewerHandle, password, kdfSalt);
       setPassword("");
       await submitSignature(signing.secretKey, signing.publicKey);
       setState({ kind: "done" });

@@ -13,6 +13,7 @@ import { NextResponse } from "next/server";
 import {
   SESSION_COOKIE,
   createSession,
+  ensureKdfSalt,
   normalizeUsername,
   sessionCookieOptions,
   verifyLogin,
@@ -69,8 +70,13 @@ export async function POST(request: Request) {
       );
     }
 
+    // The per-user KDF salt, delivered only now, after the password check, so
+    // the client can derive its identity keys under a salt no attacker holding
+    // only the public handle can obtain (F-01). Created here for accounts that
+    // predate the salt.
+    const kdfSalt = await ensureKdfSalt(user.id);
     const session = await createSession(user.id);
-    const response = NextResponse.json({ username: user.username });
+    const response = NextResponse.json({ username: user.username, kdfSalt });
     response.cookies.set(
       SESSION_COOKIE,
       session.token,

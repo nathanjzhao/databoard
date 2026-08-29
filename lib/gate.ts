@@ -30,12 +30,16 @@ const PUBLIC_PATHS = new Set([
   // pure HMAC recompute (lib/receipts.ts), no session, no database.
   "/receipts/verify",
   "/api/receipts/verify",
-  // The signing-key directory is public for the same reason: a receipt
-  // verifier with no account must be able to confirm that a party signature's
-  // key is the one the board holds for that handle. GET ?handle= is the public
-  // directory read; the own-key GET and the write-once POST enforce a session
-  // inside the route, so a logged-out caller to either just gets a 401.
-  "/api/signing/pubkey",
+  // NOTE: /api/signing/pubkey is deliberately NOT public. It used to be, so a
+  // receipt verifier with no account could confirm a party key against the
+  // board's directory. But the pubkey it returns is a deterministic function of
+  // (password, handle), which made the public directory an OFFLINE
+  // password-cracking oracle (F-01): anyone could fetch a handle's key and
+  // brute-force the password with no session. The directory now requires a
+  // session (the route enforces getSessionUser). Public /receipts/verify still
+  // works: a receipt VERIFIES against the signer pubkeys it already carries in
+  // its own attestation roster; the directory cross-check is an extra step
+  // available only to a logged-in checker.
 ]);
 
 /**

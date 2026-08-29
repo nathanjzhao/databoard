@@ -36,6 +36,7 @@ import {
   SESSION_COOKIE,
   createSession,
   createUser,
+  ensureKdfSalt,
   sessionCookieOptions,
   usernameTaken,
 } from "@/lib/auth";
@@ -158,10 +159,15 @@ export async function POST(request: Request) {
       );
     }
 
+    // Mint the per-user KDF salt now and hand it back with the session, so the
+    // browser derives its identity keys under a salt tied to this account and
+    // not to the public handle alone (F-01).
+    const kdfSalt = await ensureKdfSalt(created.user.id);
     const session = await createSession(created.user.id);
     const response = NextResponse.json({
       username: created.user.username,
       accountType: created.user.accountType,
+      kdfSalt,
     });
     response.cookies.set(
       SESSION_COOKIE,

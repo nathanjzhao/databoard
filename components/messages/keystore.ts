@@ -28,6 +28,45 @@ import {
 
 const STORAGE_KEY = "databoard.e2ee.v1";
 
+/**
+ * The per-user KDF salt (user_kdf_salt), cached for the tab. It is mixed into
+ * the identity-key derivation (lib/e2ee.ts) so the published public keys are
+ * not a pure function of (password, handle) (F-01). Login and signup hand it
+ * back in their responses and prime this cache; flows that re-derive from the
+ * password without a fresh login (the thread unlock, the exchange stepper, the
+ * party-signature panel) fetch it from /api/auth/kdf-salt against their session.
+ */
+let saltCache: { username: string; salt: string } | null = null;
+
+/** Seed the salt cache from a login/signup response. */
+export function primeKdfSalt(username: string, salt: string | undefined | null): void {
+  if (typeof salt === "string" && salt.length > 0) {
+    saltCache = { username, salt };
+  }
+}
+
+/**
+ * The current session user's KDF salt. Returns undefined when it cannot be
+ * fetched (logged out, offline, or a legacy account with no salt yet), in which
+ * case the caller derives the original unsalted keys. Only the session user's
+ * own salt is ever served, which is the whole point (F-01).
+ */
+export async function fetchKdfSalt(username: string): Promise<string | undefined> {
+  if (saltCache && saltCache.username === username) return saltCache.salt;
+  try {
+    const res = await fetch("/api/auth/kdf-salt", { headers: { accept: "application/json" } });
+    if (!res.ok) return undefined;
+    const data = (await res.json().catch(() => null)) as { salt?: string } | null;
+    if (data && typeof data.salt === "string" && data.salt.length > 0) {
+      saltCache = { username, salt: data.salt };
+      return data.salt;
+    }
+  } catch {
+    // No salt this tab: fall back to the unsalted derivation.
+  }
+  return undefined;
+}
+
 export type UnlockedKeys = {
   username: string;
   publicKey: string;
@@ -131,7 +170,11 @@ export async function unlockWithPassword(
   password: string,
   expectedPubkey?: string | null,
 ): Promise<UnlockedKeys | null> {
-  const derived = await deriveIdentityKeys(username, password);
+  // The identity keys are derived under this account's per-user KDF salt, so
+  // the derived public key matches the one login registered (F-01). Legacy
+  // accounts with no salt row fall back to the unsalted derivation.
+  const kdfSalt = await fetchKdfSalt(username);
+  const derived = await deriveIdentityKeys(username, password, kdfSalt);
   if (expectedPubkey && derived.publicKey !== expectedPubkey) return null;
   // Split the signing pair off the same seed, so a tab unlocked for messages
   // can also sign a receipt or an exchange step without a second prompt or a

@@ -15,7 +15,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { INDEPENDENT_AFFILIATION } from "@/lib/taxonomy";
 import { deriveIdentityKeys, signingKeysFromSeed } from "@/lib/e2ee";
-import { saveKeys } from "@/components/messages/keystore";
+import { primeKdfSalt, saveKeys } from "@/components/messages/keystore";
 
 type Step = "identity" | "code" | "credentials" | "done";
 
@@ -121,7 +121,12 @@ export function SignupFlow() {
       // keys are never sent.
       try {
         const username = String(data.username);
-        const keys = await deriveIdentityKeys(username, password);
+        // The per-user KDF salt the signup response delivered (F-01): derive the
+        // keys under it, and cache it for this tab.
+        const kdfSalt: string | undefined =
+          typeof data.kdfSalt === "string" ? data.kdfSalt : undefined;
+        primeKdfSalt(username, kdfSalt);
+        const keys = await deriveIdentityKeys(username, password, kdfSalt);
         await fetch("/api/e2ee/pubkey", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -367,8 +372,9 @@ export function SignupFlow() {
                 onChange={(e) => setPassword(e.target.value)}
               />
               <p className="mt-2 text-[0.75rem] text-ink-faint">
-                At least 10 characters. There is no reset: we keep no contact to
-                send one to. Lose it and the account is gone. Write it down now.
+                At least 14 characters; a short passphrase is easiest. There is
+                no reset: we keep no contact to send one to. Lose it and the
+                account is gone. Write it down now.
               </p>
             </label>
 
@@ -386,7 +392,7 @@ export function SignupFlow() {
               </button>
               <button
                 type="submit"
-                disabled={busy || password.length < 10}
+                disabled={busy || password.length < 14}
                 className="bt-btn bt-btn-primary flex-1"
               >
                 {busy ? "Creating" : "Create account"}

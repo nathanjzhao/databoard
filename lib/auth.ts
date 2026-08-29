@@ -139,6 +139,34 @@ export async function createUser(
   return { ok: true, user: rowToSessionUser(row as unknown as Record<string, unknown>) };
 }
 
+/* --------------------------------------------------------- kdf salt */
+
+/**
+ * The per-user KDF salt (user_kdf_salt), minted write-once. Mixed into the
+ * client-side identity-key derivation (lib/e2ee.ts) so the published signing /
+ * e2ee public keys stop being a pure function of (password, handle). Returned
+ * to the client only inside that user's own authenticated login/signup
+ * response, i.e. only after the password check, and never for any other handle.
+ *
+ * Write-once (INSERT OR IGNORE): the first salt an account gets stands for the
+ * life of the account, so every device re-derives the same keys. Accounts that
+ * predate this table get their row here on their next login. The salt is opaque
+ * random bytes, no PII.
+ */
+export async function ensureKdfSalt(userId: string): Promise<string> {
+  const db = await getDb();
+  await db.execute({
+    sql: `INSERT OR IGNORE INTO user_kdf_salt (user_id, salt, created_at)
+          VALUES (?, ?, ?)`,
+    args: [userId, randomToken(32), now()],
+  });
+  const rs = await db.execute({
+    sql: `SELECT salt FROM user_kdf_salt WHERE user_id = ?`,
+    args: [userId],
+  });
+  return String(rs.rows[0]!.salt);
+}
+
 /* ----------------------------------------------------------------- login */
 
 export async function findUserByUsername(username: string): Promise<SessionUser | null> {

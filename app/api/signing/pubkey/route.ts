@@ -5,14 +5,18 @@
  * Public key material only; the private half is derived from the password in
  * the browser (lib/e2ee.ts deriveSigningKeys) and never travels.
  *
- * GET ?handle=<h> -> { handle, pubkey | null }   PUBLIC key directory. Anyone,
- *        with or without a session, can look up the signing key registered for
- *        a handle. This is what lets a receipt verifier on /receipts/verify (no
- *        account) confirm that a party signature's key is the one the board
- *        holds for that handle. It exposes only public key material bound to an
- *        already-public handle; honest limit, stated on /transparency: it is an
+ * GET ?handle=<h> -> { handle, pubkey | null }   Key directory, SESSION-GATED.
+ *        A signed-in caller can look up the signing key registered for a handle,
+ *        to cross-check that a party signature's key is the one the board holds.
+ *        It used to be public, but the pubkey is a deterministic function of
+ *        (password, handle), so a public directory was an offline
+ *        password-cracking oracle (F-01): anyone could fetch a handle's key and
+ *        brute-force the password with no account. It now requires a session,
+ *        downgrading the oracle from "anyone on the internet" to "an attacker
+ *        who already holds a session"; the durable fix is the per-user KDF salt
+ *        (lib/e2ee.ts). Honest limit, stated on /transparency: it is an
  *        operator-served directory, i.e. trust-on-first-use, not key
- *        transparency. Enumeration reveals only which handles have a key.
+ *        transparency.
  * GET    -> { username, pubkey | null }   the signed-in user's own key.
  * POST   { pubkey } -> { pubkey }   registers it, WRITE-ONCE, exactly like the
  *        e2ee key: the first key an account registers is the key, and later
@@ -21,9 +25,10 @@
  *        base64url characters (a 32-byte Ed25519 key). The reply echoes it so
  *        the client can detect a mismatch and say so out loud.
  *
- * This path is allowlisted as public in lib/gate.ts for the directory read; the
- * own-key GET and the POST enforce a session here, so a logged-out caller to
- * either simply gets a 401.
+ * Every verb here enforces a session (getSessionUser). Public /receipts/verify
+ * still works without one: a receipt verifies against the signer pubkeys it
+ * already carries in its attestation roster; only the extra directory
+ * cross-check is gated behind a session.
  */
 
 import { NextResponse } from "next/server";
@@ -58,7 +63,14 @@ async function pubkeyForHandle(handle: string): Promise<string | null> {
 export async function GET(request: Request) {
   const handleParam = new URL(request.url).searchParams.get("handle");
   try {
-    // Public directory read: no session required.
+    // Every read requires a session now: the directory is no longer a public,
+    // no-account oracle (F-01).
+    const user = await getSessionUser();
+    if (!user) {
+      return NextResponse.json({ error: "Not signed in." }, { status: 401 });
+    }
+    // Directory read: another handle's registered signing key, for the
+    // logged-in receipt cross-check.
     if (handleParam != null) {
       const handle = handleParam.trim().toLowerCase();
       if (!isHandle(handle)) {
@@ -70,11 +82,7 @@ export async function GET(request: Request) {
         { headers: { "Cache-Control": "no-store" } },
       );
     }
-    // Own-key read: session required.
-    const user = await getSessionUser();
-    if (!user) {
-      return NextResponse.json({ error: "Not signed in." }, { status: 401 });
-    }
+    // Own-key read.
     const pubkey = await storedPubkey(user.id);
     return NextResponse.json({ username: user.username, pubkey });
   } catch (err) {
