@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "DataBoard Code Verify",
+  "version": "1.0.0",
+  "description": "Independently checks that the JavaScript getdataboard.vercel.app runs matches the integrity manifest CI attested. Detection, not prevention.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://getdataboard.vercel.app/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://getdataboard.vercel.app/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": ["check.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "DataBoard Code Verify"
+  }
+}

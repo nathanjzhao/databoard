@@ -1,0 +1,154 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --ink: #101010;
+        --dim: #55565a;
+        --faint: #8a8b90;
+        --rule: #e2e2e4;
+        --panel: #f6f6f7;
+        --green: #1a7f37;
+        --green-wash: #eaf6ec;
+        --red: #cf222e;
+        --red-wash: #fdeced;
+        --amber: #9a6700;
+        --amber-wash: #fbf3e2;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        width: 380px;
+        font-family: Helvetica, "Helvetica Neue", Arial, system-ui, sans-serif;
+        color: var(--ink);
+        background: #fff;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .pad {
+        padding: 14px 16px;
+      }
+      .label {
+        font-size: 10px;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+      .verdict {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      .dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        flex: none;
+      }
+      .verdict h1 {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 700;
+      }
+      .green .dot {
+        background: var(--green);
+      }
+      .green h1 {
+        color: var(--green);
+      }
+      .red .dot {
+        background: var(--red);
+      }
+      .red h1 {
+        color: var(--red);
+      }
+      .unavailable .dot {
+        background: var(--faint);
+      }
+      .unavailable h1 {
+        color: var(--dim);
+      }
+      .meta {
+        margin-top: 10px;
+        border-top: 1px solid var(--rule);
+        padding-top: 10px;
+        font-size: 12px;
+        color: var(--dim);
+      }
+      .meta div {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 1px 0;
+      }
+      .mono {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 11px;
+        color: var(--ink);
+        overflow-wrap: anywhere;
+        text-align: right;
+      }
+      .list {
+        margin-top: 10px;
+      }
+      .list h2 {
+        margin: 0 0 4px;
+        font-size: 10px;
+        letter-spacing: 0.13em;
+        text-transform: uppercase;
+        color: var(--faint);
+      }
+      .problem {
+        background: var(--red-wash);
+        border-left: 2px solid var(--red);
+        padding: 6px 8px;
+        margin: 4px 0;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 11px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      .okrow {
+        color: var(--faint);
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 11px;
+        padding: 1px 0;
+        overflow-wrap: anywhere;
+      }
+      .note {
+        margin-top: 12px;
+        border-top: 1px solid var(--rule);
+        padding-top: 10px;
+        font-size: 11px;
+        color: var(--faint);
+      }
+      details summary {
+        cursor: pointer;
+        color: var(--dim);
+        font-size: 11px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="pad" id="root">
+      <div class="label">DataBoard Code Verify</div>
+      <div class="verdict unavailable" id="verdict">
+        <span class="dot"></span>
+        <h1 id="headline">Checking…</h1>
+      </div>
+      <div id="body"></div>
+      <div class="note">
+        Detection, not prevention: a red result means do not trust this session,
+        not that you were protected. This checks bytes against the manifest and
+        pins the repo + workflow; the Sigstore signature over the manifest
+        digest is verified separately by scripts/verify-served-js.sh --attest.
+      </div>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
