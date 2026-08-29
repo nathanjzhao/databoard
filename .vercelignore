@@ -1,0 +1,5 @@
+.next-test-*/
+data/
+verify/
+test-results/
+playwright-report/
