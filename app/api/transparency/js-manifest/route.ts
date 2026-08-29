@@ -1,9 +1,13 @@
 /**
  * GET /api/transparency/js-manifest
  *
- * The SHA-256 manifest of every static asset this deployment serves under
- * /_next/static: one entry per file with path, hash, and byte count, written
- * by scripts/gen-js-manifest.mjs immediately after `next build`. Public by
+ * The SHA-256 integrity manifest of every executable and style asset this
+ * deployment serves under /_next/static: one entry per file with path, hash,
+ * and byte count, plus the commit it was built from, the mandatory app-shell
+ * entrypoints, the stable inline Flight bootstrap, and the provenance block
+ * (repo, workflow, and the `gh attestation verify` command for the Sigstore
+ * attestation CI made over this manifest's digest). Written by
+ * scripts/gen-js-manifest.mjs immediately after `next build`. Public by
  * design, same as /api/transparency/schema (lib/gate.ts serves the
  * /api/transparency/ prefix without a session).
  *
@@ -15,10 +19,15 @@
  * glob resolves; the post-build run overwrites it with the real hashes), so
  * this handler serves the bytes of the build actually running.
  *
- * What this proves, stated honestly on /transparency: that the static JS you
- * receive matches the manifest the same server published. Cross-checking the
- * manifest against the CI artifact for the stamped commit is what makes it
- * third-party. scripts/verify-served-js.sh automates the first step.
+ * What this proves, stated honestly on /transparency/code: the outside
+ * verifier (tools/code-verify-extension, or scripts/verify-served-js.sh)
+ * hashes the bytes the browser actually ran and checks them against THIS
+ * manifest, both directions. The manifest's own trust comes from the Sigstore
+ * attestation over its digest (bound to the CI workflow at this commit) and
+ * from its digest being logged as a `served_manifest` leaf in the append-only
+ * transparency log. A page cannot verify itself when the origin is the
+ * adversary, so the trust anchor is the installed extension / CLI, never this
+ * response. The route serves the bytes as-is and adds no claim of its own.
  */
 
 import { readFileSync } from "node:fs";

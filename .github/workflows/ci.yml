@@ -4,6 +4,14 @@ on:
   push:
   pull_request:
 
+# The served-JS manifest attestation needs an OIDC token to sign through
+# Sigstore and the attestations scope to store the result; everything else in
+# the job is read-only. Naming these narrows the token to exactly this set.
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -43,6 +51,41 @@ jobs:
         with:
           name: build-manifest-sha256-${{ github.sha }}
           path: .next/build-manifest.sha256.json
+          retention-days: 90
+
+      # Bind the manifest's sha256 to THIS workflow identity at THIS commit via
+      # Sigstore (SLSA build provenance). The attestation is stored in GitHub's
+      # attestation API, so anyone can verify the manifest the live site serves
+      # with `gh attestation verify <manifest> --repo nathanjzhao/databoard
+      # --signer-workflow nathanjzhao/databoard/.github/workflows/ci.yml`
+      # (scripts/verify-served-js.sh --attest does exactly this). Honest limit,
+      # documented on /transparency/code: this proves the workflow signed the
+      # digest, NOT that it faithfully compiled the source or that prod serves
+      # these bytes; the outside verifier hashing live assets closes that gap.
+      # Only on pushes to this repo: PRs and forks have no id-token write, and
+      # the byte check needs no attestation.
+      # Non-blocking on purpose: if the runner or the repo/org cannot mint an
+      # attestation (attestations disabled, an org policy, a fork with no
+      # id-token), the byte check + the served_manifest log leaf still stand, so
+      # the suite job must not go red over a missing signature. continue-on-error
+      # lets the step fail softly; the bundle upload below gates on its success.
+      - name: Attest served-JS manifest provenance
+        id: attest
+        if: github.event_name == 'push' && github.repository == 'nathanjzhao/databoard'
+        continue-on-error: true
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: .next/build-manifest.sha256.json
+
+      # Publish the Sigstore bundle alongside the manifest so the attestation
+      # can also be checked fully offline (gh attestation verify --bundle),
+      # not only through GitHub's API.
+      - name: Upload attestation bundle
+        if: steps.attest.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: js-manifest-attestation-${{ github.sha }}
+          path: ${{ steps.attest.outputs.bundle-path }}
           retention-days: 90
 
       - name: Install Playwright chromium
