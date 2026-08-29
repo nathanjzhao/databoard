@@ -1020,6 +1020,7 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     "translog_events",
     "translog_heads",
     "translog_leaves",
+    "translog_witness_cosignatures",
     "user_e2ee_keys",
     "user_kdf_salt",
     "user_signing_keys",

@@ -32,7 +32,13 @@ import {
 } from "../lib/deals.ts";
 import { consumeInvite, mintInvite } from "../lib/invites.ts";
 import { confirmSettlement, recordSettlement } from "../lib/referrals.ts";
-import { getSignedHead, loggedReceiptForDeal } from "../lib/translog.ts";
+import {
+  getSignedHead,
+  loggedReceiptForDeal,
+  storeWitnessCosignature,
+} from "../lib/translog.ts";
+import { cosign } from "../lib/witness.ts";
+import { activeWitnessSeed } from "../lib/witnesses.ts";
 import { getDealForUser } from "../lib/deals.ts";
 import { partyBaseFieldsFromPayload } from "../lib/receipts.ts";
 import { partySigningBase, signReceiptBase } from "../lib/receipt-attest.ts";
@@ -1169,6 +1175,24 @@ async function main() {
       )].sort((a, b) => a - b);
       for (const s of sizes) await getSignedHead(s);
       console.log(`translog: ${size} leaves, checkpoints signed at ${sizes.join(", ")}`);
+
+      // A witness cosignature over the current head, so a fresh seed already
+      // shows a WITNESSED head on /transparency/log rather than an unwitnessed
+      // one. This runs the same cosign path the scheduled witness job runs in
+      // production (lib/witness.ts), here against the seeded log with the
+      // operator's own (dev) key: partial independence only, labeled as such
+      // everywhere. storeWitnessCosignature re-verifies the cosignature against
+      // the recognized registry and the head this log signed, so it is a
+      // genuine store, not a rubber stamp.
+      const head = await getSignedHead();
+      if (head.treeSize > 0) {
+        const { seed, keyName } = activeWitnessSeed();
+        const cosig = cosign(head, seed, { keyName });
+        const stored = await storeWitnessCosignature(cosig);
+        console.log(
+          `witness: ${stored.status} cosignature over head size ${head.treeSize} by ${keyName} (partial independence: operator-run dev key)`,
+        );
+      }
     }
   }
 
