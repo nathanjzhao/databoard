@@ -115,11 +115,17 @@ jobs:
       - run: npx vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
 ```
 
-After this, the live digest equals the attested digest, so
-`verify-served-js.sh --attest https://getdataboard.vercel.app` verifies the live
-bytes against a GitHub-attested build of the pinned commit, and the extension's
-out-of-band pin matches prod. This is the step that turns the mechanism from
-"correct for a build nobody serves" into "the bytes you are running are the
-attested ones". It is documented and not yet enabled because enabling it needs
-the `VERCEL_TOKEN` secret and switches the deploy path; it has not been run end
-to end here, so treat it as ready-to-enable, not verified.
+This is now LIVE. `.github/workflows/deploy-prebuilt.yml` builds with
+`vercel build`, attests the served manifest under its own workflow identity
+(ATTEST_WORKFLOW), and deploys the prebuilt output, so Vercel does not rebuild
+and the live digest equals the attested digest. Confirmed end to end:
+
+    scripts/verify-served-js.sh https://getdataboard.vercel.app all --attest
+
+passes both the Sigstore attestation (the live manifest's digest is signed by
+nathanjzhao/databoard/.github/workflows/deploy-prebuilt.yml) and the per-asset
+byte check (every served asset matches the attested manifest). So a skeptic can
+confirm the bytes prod runs were built by a named GitHub workflow from the
+pinned public commit, verified out of band, not self-served. The residuals above
+(reproducibility, detection-not-prevention, trust in CI/Sigstore/GitHub) still
+hold; this closes only the "does prod serve the attested build" gap.
