@@ -299,6 +299,25 @@ export type Sth = {
 };
 
 /**
+ * Just the six signed fields of a head, dropping anything a transport wrapped
+ * around it (the /api/translog/sth response now also carries witness
+ * cosignatures). The anchor and OpenTimestamps scripts write/stamp this so the
+ * immutable anchor files stay pure core heads and never freeze a volatile
+ * witness snapshot; the signature still verifies, since these are exactly the
+ * bytes it covers.
+ */
+export function coreSth(sth: Sth): Sth {
+  return {
+    v: sth.v,
+    logId: sth.logId,
+    treeSize: sth.treeSize,
+    rootHash: sth.rootHash,
+    timestamp: sth.timestamp,
+    signature: sth.signature,
+  };
+}
+
+/**
  * The exact bytes an STH signature covers: the head with the signature field
  * removed, canonicalized. Server signs these, everyone verifies these.
  */

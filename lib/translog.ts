@@ -56,6 +56,13 @@ import {
 } from "./receipts.ts";
 import { attestationForDeal } from "./party-sigs.ts";
 import type { DealDetail } from "./deals.ts";
+import {
+  verifyCosignature,
+  checkQuorum,
+  type WitnessCosignature,
+  type WitnessedSth,
+} from "./witness.ts";
+import { recognizedWitnesses, witnessQuorumN } from "./witnesses.ts";
 
 /* --------------------------------------------------------------- log key */
 
@@ -103,7 +110,15 @@ export type LeafEvent =
   | { type: "referral_settled"; subject: string; totalUsd: number }
   | { type: "ask_posted"; subject: string; category: string }
   | { type: "ask_closed"; subject: string; reason: string }
-  | { type: "invite_consumed"; subject: string };
+  | { type: "invite_consumed"; subject: string }
+  // The served-JS integrity manifest itself, as a leaf: the sha256 digest of
+  // the manifest served at /api/transparency/js-manifest, plus the build id it
+  // describes. This is the manifest CI attests with Sigstore; logging its
+  // digest puts the code-integrity claim inside the same witnessed append-only
+  // log as the deal ledger, so which JS a deployment vouched for at a commit is
+  // as tamper-evident as everything else. All three fields are public,
+  // non-PII: a git commit, a build id, and a hash. See scripts/gen-js-manifest.
+  | { type: "served_manifest"; subject: string; manifestSha256: string; buildId: string };
 
 /** Build the canonical leaf object (pre-hash) for an event at a sequence. */
 function buildLeaf(seq: number, ts: number, event: LeafEvent): Record<string, unknown> {
@@ -125,6 +140,8 @@ function buildLeaf(seq: number, ts: number, event: LeafEvent): Record<string, un
       return { ...base, reason: event.reason };
     case "invite_consumed":
       return base;
+    case "served_manifest":
+      return { ...base, manifestSha256: event.manifestSha256, buildId: event.buildId };
   }
 }
 
@@ -217,6 +234,71 @@ export async function appendLeafBestEffort(
   } catch (err) {
     console.error(`translog: append(${event.type}) failed:`, err);
   }
+}
+
+/* ------------------------------------------------ served-manifest binding */
+
+export type ServedManifestLeaf = {
+  seq: number;
+  leafHash: string;
+  manifestSha256: string;
+  buildId: string;
+  commit: string | null;
+};
+
+/**
+ * Log the served-JS integrity manifest as a leaf: the sha256 of the exact
+ * bytes served at /api/transparency/js-manifest (which is the digest CI
+ * attests with Sigstore), together with the build id and commit it describes.
+ * This is what makes "the manifest itself is in the witnessed append-only log"
+ * true: the code-integrity claim for a deployment becomes as tamper-evident as
+ * the deal ledger, so an operator cannot quietly swap which JS it vouched for
+ * at a commit without the consistency proof and the external anchors
+ * disagreeing.
+ *
+ * Idempotent per (commit, digest): re-running the deploy hook for the same
+ * manifest reuses the one leaf. The subject is HMAC(commit) for structural
+ * uniformity with every other leaf; the manifest digest and build id ride as
+ * clear fields, since all three are public and non-PII, so an auditor who
+ * knows the served manifest's digest can find its leaf by that digest.
+ *
+ * Pass the RAW manifest bytes (the same string the route serves), not a
+ * re-serialized object: the digest must match what an outside verifier
+ * computes over the downloaded file. Returns null on a stub/malformed manifest.
+ */
+export async function logServedManifest(
+  manifestJson: string,
+): Promise<ServedManifestLeaf | null> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(manifestJson);
+  } catch {
+    return null;
+  }
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !Array.isArray((parsed as { files?: unknown }).files)
+  ) {
+    return null; // a stub or a non-manifest: nothing to vouch for
+  }
+  const m = parsed as { commit?: unknown; buildId?: unknown };
+  const commit = typeof m.commit === "string" ? m.commit : null;
+  const buildId =
+    typeof m.buildId === "string"
+      ? m.buildId
+      : (commit ?? "unknown");
+  const manifestSha256 = sha256Hex(manifestJson);
+  const { seq, leafHash } = await appendLeaf(
+    {
+      type: "served_manifest",
+      subject: commit ?? manifestSha256,
+      manifestSha256,
+      buildId,
+    },
+    { dedupKey: `served_manifest:${commit ?? "nocommit"}:${manifestSha256}` },
+  );
+  return { seq, leafHash, manifestSha256, buildId, commit };
 }
 
 /* -------------------------------------------------------------- reading */
@@ -433,4 +515,140 @@ export async function logDealState(
       { dedupKey: `deal_tiered:${deal.id}:${deal.tier}` },
     );
   }
+}
+
+/* ----------------------------------------------- witness cosignatures */
+
+/**
+ * The stored witness cosignatures over the head at a tree size, newest first.
+ * These are the cosignatures the log serves alongside its own signed head so a
+ * client can check the witness quorum. Each is a full canonical
+ * WitnessCosignature (lib/witness.ts).
+ */
+export async function witnessCosignaturesForSize(
+  treeSize: number,
+): Promise<WitnessCosignature[]> {
+  const db = await getDb();
+  const rs = await db.execute({
+    sql: `SELECT cosignature FROM translog_witness_cosignatures
+           WHERE tree_size = ? ORDER BY received_at ASC`,
+    args: [treeSize],
+  });
+  return rs.rows.map((r) => JSON.parse(String(r.cosignature)) as WitnessCosignature);
+}
+
+export type StoreCosignatureResult = {
+  status:
+    | "stored" // accepted and recorded
+    | "deduped" // already had this exact cosignature
+    | "unrecognized" // not a witness this log's registry recognizes
+    | "unknown_head" // no head at that size, or a different root than this log signed
+    | "bad_signature" // the cosignature does not verify against the registered key
+    | "witness_fork"; // this witness already cosigned a DIFFERENT root at this size
+  message: string;
+};
+
+/**
+ * Store a witness cosignature posted to POST /api/translog/add-checkpoint. The
+ * log accepts a cosignature only when it is (1) from a RECOGNIZED witness,
+ * (2) over a head this log actually signed (same size AND same root), and
+ * (3) a valid Ed25519 signature by that witness's registered key. The
+ * cryptographic acceptance IS the authentication: no session, no shared secret,
+ * because only the witness holding the key can produce a passing cosignature,
+ * and it must match a head we ourselves issued.
+ *
+ * A witness that already cosigned this size with a DIFFERENT root is itself
+ * forking; that is recorded as `witness_fork` and refused, never overwritten,
+ * because a witness double-signing a size is portable evidence, not a row to
+ * silently replace.
+ */
+export async function storeWitnessCosignature(
+  cosig: WitnessCosignature,
+): Promise<StoreCosignatureResult> {
+  if (!cosig || typeof cosig !== "object" || !Number.isInteger(cosig.treeSize)) {
+    return { status: "bad_signature", message: "malformed cosignature" };
+  }
+  // The witness must be one the registry recognizes; trust flows through the
+  // registered key, never the key the cosignature carries.
+  const recognized = recognizedWitnesses().find((w) => w.witnessId === cosig.witnessId);
+  if (!recognized) {
+    return { status: "unrecognized", message: "witness id is not in the recognized registry" };
+  }
+  // The head must be one this log signed, at that size, with that exact root.
+  let head: Sth;
+  try {
+    head = await getSignedHead(cosig.treeSize);
+  } catch {
+    return { status: "unknown_head", message: `no signed head at size ${cosig.treeSize}` };
+  }
+  if (head.treeSize !== cosig.treeSize || head.rootHash.toLowerCase() !== cosig.rootHash.toLowerCase()) {
+    return {
+      status: "unknown_head",
+      message: `cosignature root does not match the head this log signed at size ${cosig.treeSize}`,
+    };
+  }
+  if (!verifyCosignature(cosig, recognized.publicKey, head)) {
+    return { status: "bad_signature", message: "cosignature does not verify against the registered key" };
+  }
+
+  const db = await getDb();
+  const existing = await db.execute({
+    sql: `SELECT root_hash FROM translog_witness_cosignatures WHERE witness_id = ? AND tree_size = ?`,
+    args: [cosig.witnessId, cosig.treeSize],
+  });
+  if (existing.rows[0]) {
+    const priorRoot = String(existing.rows[0].root_hash).toLowerCase();
+    if (priorRoot !== cosig.rootHash.toLowerCase()) {
+      // The witness cosigned two different roots at one size: a fork by the
+      // witness itself. Refuse and surface it; do not overwrite the record.
+      return {
+        status: "witness_fork",
+        message: `witness ${cosig.witnessId.slice(0, 12)} already cosigned size ${cosig.treeSize} with a different root`,
+      };
+    }
+    return { status: "deduped", message: "cosignature already stored" };
+  }
+
+  await db.execute({
+    sql: `INSERT INTO translog_witness_cosignatures
+            (witness_id, tree_size, root_hash, key_name, public_key, cosignature, cosigned_at, received_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(witness_id, tree_size) DO NOTHING`,
+    args: [
+      cosig.witnessId,
+      cosig.treeSize,
+      cosig.rootHash.toLowerCase(),
+      recognized.keyName,
+      recognized.publicKey,
+      JSON.stringify(cosig),
+      cosig.cosignedAt,
+      now(),
+    ],
+  });
+  return { status: "stored", message: "cosignature stored" };
+}
+
+/**
+ * The signed head at a size (default current) EXTENDED with its witness
+ * cosignatures and the quorum verdict. The core Sth fields are the same bytes
+ * getSignedHead returns, so the log signature and every existing verifier are
+ * untouched; the witness layer rides alongside. This is what /api/translog/sth
+ * serves and /transparency/log renders.
+ */
+export async function getWitnessedHead(size?: number): Promise<WitnessedSth> {
+  const sth = await getSignedHead(size);
+  const cosignatures = await witnessCosignaturesForSize(sth.treeSize);
+  const registry = recognizedWitnesses();
+  const quorum = checkQuorum(sth, cosignatures, registry, witnessQuorumN());
+  return {
+    ...sth,
+    cosignatures: quorum.valid,
+    witnessing: {
+      required: quorum.required,
+      recognized: quorum.recognized,
+      independent: quorum.independent,
+      present: quorum.present,
+      met: quorum.met,
+    },
+  };
 }

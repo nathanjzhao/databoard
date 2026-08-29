@@ -903,6 +903,42 @@ CREATE TABLE IF NOT EXISTS translog_events (
 );
 
 -- ---------------------------------------------------------------------------
+-- translog_witness_cosignatures  (independent witness cosignatures on heads)
+--
+-- The C2SP tlog-witness / sigsum layer (lib/witness.ts). An independent
+-- witness holds its OWN Ed25519 key and its own memory of the last head it
+-- accepted, and cosigns a new head only after verifying the log's signature
+-- and an RFC 6962 consistency proof from the head it last saw. Its cosignature
+-- is posted back here (POST /api/translog/add-checkpoint) so the live signed
+-- head can carry it, and clients that require a witness quorum (N-of-M) refuse
+-- to trust a head the recognized witnesses did not cosign.
+--
+-- One row per (witness, tree_size): a witness cosigns each size at most once.
+-- A second, DIFFERENT root at a size a witness already cosigned would be the
+-- witness itself double-signing; the store path rejects it loudly rather than
+-- overwriting, because that divergence is portable evidence of a fork.
+--
+-- No PII: a witness key id and label, a tree size, two hex digests, a
+-- signature and timestamps. The cosignature column is the full canonical
+-- WitnessCosignature JSON so the served head is self-verifying.
+--
+--   witness_id  = SHA-256 of the witness public key hex (lib/witness.ts)
+--   cosignature = { v, witnessId, keyName, logId, treeSize, rootHash,
+--                   cosignedAt, publicKey, signature }
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS translog_witness_cosignatures (
+  witness_id   TEXT    NOT NULL,   -- SHA-256 of the witness public key hex
+  tree_size    INTEGER NOT NULL,   -- the head size this witness cosigned
+  root_hash    TEXT    NOT NULL,   -- root at tree_size (cross-check vs the head)
+  key_name     TEXT    NOT NULL,   -- witness label at store time (non-authoritative)
+  public_key   TEXT    NOT NULL,   -- witness Ed25519 public key hex
+  cosignature  TEXT    NOT NULL,   -- full canonical WitnessCosignature JSON
+  cosigned_at  INTEGER NOT NULL,   -- witness's own cosign timestamp (ms)
+  received_at  INTEGER NOT NULL,   -- when the log stored it (ms)
+  PRIMARY KEY (witness_id, tree_size)
+);
+
+-- ---------------------------------------------------------------------------
 -- exchange_sessions  (commit-encrypt-pay-reveal dataset handoff, Tier A)
 --
 -- One session per attempted dataset-for-payment handoff riding on a deal. The

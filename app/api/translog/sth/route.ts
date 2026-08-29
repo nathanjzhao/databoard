@@ -6,16 +6,22 @@
  * one canonical head). Public, no session (lib/gate.ts): the whole point of a
  * transparency log is that anyone can pull the head and the proofs.
  *
- *   { v, logId, treeSize, rootHash, timestamp, signature }
+ *   { v, logId, treeSize, rootHash, timestamp, signature,
+ *     cosignatures: [...], witnessing: { required, recognized, present, met } }
  *
  * The signature is Ed25519 over the canonical head; verify it against the key
- * at /api/translog/pubkey. See lib/translog.ts for what the log records (all
+ * at /api/translog/pubkey. The core head fields (v..signature) are the exact
+ * bytes the log signed, so an old verifier that ignores the extra fields still
+ * checks out. `cosignatures` are independent-witness cosignatures (C2SP
+ * tlog-witness, lib/witness.ts) over this head, and `witnessing` reports the
+ * N-of-M quorum: a head with met=false is unwitnessed and should be trusted
+ * only with that caveat. See lib/translog.ts for what the log records (all
  * metadata, no PII) and the honest boundary on the operator forking it.
  */
 
 import { NextResponse } from "next/server";
 import { DbNotConfiguredError } from "@/lib/db";
-import { getSignedHead } from "@/lib/translog";
+import { getWitnessedHead } from "@/lib/translog";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +37,7 @@ export async function GET(request: Request) {
     size = n;
   }
   try {
-    const sth = await getSignedHead(size);
+    const sth = await getWitnessedHead(size);
     return NextResponse.json(sth, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     if (err instanceof DbNotConfiguredError) {
