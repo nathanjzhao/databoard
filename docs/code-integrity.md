@@ -69,3 +69,57 @@ reference.
   executed bytes. Pair it with the terminal script.
 - **Extension update channel.** Shipped unpacked, no auto-update; the pins
   change only when you reinstall the folder. That manual step is the boundary.
+
+## Closing the loop on prod: prebuilt deploy (the one pending step)
+
+The gap that matters most: CI builds and attests digest A, but Vercel rebuilds
+independently and serves digest B, so `verify-served-js.sh --attest` against the
+live site correctly returns 404 and fails loudly rather than lying. The chain is
+sound for the CI artifact; it does not yet cover the bytes prod serves.
+
+To make the served bytes the attested bytes, deploy the CI-built output instead
+of letting Vercel rebuild. This needs one GitHub Actions secret, `VERCEL_TOKEN`
+(a Vercel access token), and the project ids, which are not secret and already
+live in `.vercel/project.json` (orgId + projectId).
+
+A deploy job that closes the loop:
+
+```yaml
+# .github/workflows/deploy-prebuilt.yml  (enable after adding VERCEL_TOKEN)
+name: deploy-prebuilt
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  id-token: write        # Sigstore OIDC for the attestation
+  attestations: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}       # or hardcode from .vercel/project.json
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - run: npx vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+      - run: npx vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+      # Attest the manifest over the ACTUAL deployed output, not .next/static:
+      - run: node scripts/gen-js-manifest.mjs --root .vercel/output/static --commit ${{ github.sha }}
+      - uses: actions/attest-build-provenance@v4
+        with: { subject-path: build-manifest.sha256.json }
+      # Deploy that exact prebuilt output; Vercel does not rebuild:
+      - run: npx vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
+```
+
+After this, the live digest equals the attested digest, so
+`verify-served-js.sh --attest https://getdataboard.vercel.app` verifies the live
+bytes against a GitHub-attested build of the pinned commit, and the extension's
+out-of-band pin matches prod. This is the step that turns the mechanism from
+"correct for a build nobody serves" into "the bytes you are running are the
+attested ones". It is documented and not yet enabled because enabling it needs
+the `VERCEL_TOKEN` secret and switches the deploy path; it has not been run end
+to end here, so treat it as ready-to-enable, not verified.
