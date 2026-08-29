@@ -243,10 +243,18 @@ export default async function TransparencyPage() {
                     running code proves its own identity; and JS delivery
                     verification in the browser, the problem WhatsApp&apos;s
                     Code Verify addresses. One residue no blinding removes:
-                    the operator holding the OPRF key can still evaluate the
-                    short public list of plausible labs offline and recognize
-                    their tokens. The protocol guarantees the server never
-                    receives a name, not that a small dictionary is large.
+                    the buyer token is a deterministic function of the name over
+                    a short public list of plausible labs, so the mapping from
+                    token to name is recoverable by anyone who can evaluate that
+                    list. The operator can do it offline with the key; any
+                    signed-in member can do it too, one blinded call to
+                    /api/voprf/evaluate per candidate name. The rate limit on
+                    that endpoint is cost control, not a pseudonymity control: it
+                    slows a script, it does not keep the mapping secret. The
+                    protocol guarantees the server never receives a name, not
+                    that a small dictionary is large. The durable fix is a
+                    redesigned token (a random per-entity pseudonym), on the
+                    verification page&apos;s roadmap.
                     And one residue no system removes: what you write in an
                     ask is public and yours. A description specific enough to
                     identify your company identifies it under any handle.

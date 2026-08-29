@@ -612,10 +612,14 @@ export default function VerificationPage() {
             client check that the same server key answers everyone, so the
             server never receives a name and cannot selectively break or
             forge matches without your own client catching it. Against a
-            database dump the token is a blind: no key, no name. Against the
-            operator it is a pseudonym, not a secret, because the set of
-            plausible AI labs is small enough for the key-holder to evaluate
-            offline; the schema and the main transparency page already say
+            database dump the token is a blind: no key, no name. But against
+            anyone who can evaluate the small set of plausible AI labs it is a
+            pseudonym, not a secret. That is not only the operator with the key:
+            because the token is deterministic, any signed-in member can rebuild
+            the whole token-to-name table through the blind-evaluation endpoint,
+            one call per candidate name, as feasibly as the operator does it
+            offline. The rate limit on that endpoint is cost control, not a
+            pseudonymity control; only the token redesign below actually closes
             this. The new problem a payer-bound rung adds is harder: someone
             must prove that the entity that actually paid maps to the token
             on the deal, without telling us the entity. Every mechanism on

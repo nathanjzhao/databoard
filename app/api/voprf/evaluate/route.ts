@@ -13,10 +13,17 @@
  * the other direction: an evaluation under any key but the published one
  * fails the client's verify and is thrown away.
  *
- * Auth required: blind evaluation is a member capability, not a public
- * oracle, and the rate limit below is the only thing that makes offline
- * dictionary probing by OTHER MEMBERS slow. (The operator needs no oracle;
- * they hold the key. /transparency says so.)
+ * Auth required: blind evaluation is a member capability, not an anonymous
+ * one. Be honest about what the rate limit below does and does not do (F-02):
+ * because the buyer token is a DETERMINISTIC OPRF over a SMALL public
+ * dictionary of plausible lab names, ANY member can de-anonymize that
+ * dictionary here, one oracle call per candidate name, exactly as feasibly as
+ * the operator can offline with the key. The throttle is DoS/cost control, NOT
+ * a pseudonymity control: it caps the rate, it does not make the mapping
+ * secret, and the mapping never expires. The only durable fix is the token
+ * redesign (a random per-entity KYB-certified pseudonym) tracked on
+ * /transparency/verification section 08. The operator needs no oracle at all;
+ * they hold the key. /transparency says all of this.
  */
 
 import { NextResponse } from "next/server";
@@ -42,8 +49,10 @@ export async function POST(request: Request) {
   // table (lib/ratelimit.ts), so the ceiling holds across serverless
   // instances instead of multiplying by the number of warm containers. The
   // bucket is HMAC(pepper, scope|user id): the table gains counts, not a
-  // request log. Still a throttle on casual probing, not a cryptographic
-  // control; the operator holds the key and needs no oracle.
+  // request log. This is DoS/cost control ONLY. It does NOT protect buyer
+  // pseudonymity: a member can map the whole 14-entry known-buyer dictionary in
+  // one burst well under this ceiling, and the deterministic token means that
+  // map never expires. The pseudonymity fix is the token redesign, not this.
   const limited = await checkRateLimit(RATE_LIMITS.voprfPerUser, user.id);
   if (limited.limited) {
     return NextResponse.json(

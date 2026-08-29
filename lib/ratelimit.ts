@@ -32,6 +32,7 @@
  *   verify-and-signup  10 / 10 min per IP
  *   login              10 /  5 min per handle,   30 /  5 min per IP
  *   voprf evaluate     30 /  1 min per user
+ *   asks similar        8 /  1 min per user
  *   raise dispute      10 / 10 min per user
  */
 
@@ -63,6 +64,13 @@ export const RATE_LIMITS = {
   loginPerHandle: { scope: "login-handle", limit: 10, windowMs: 5 * 60_000 },
   loginPerIp: { scope: "login-ip", limit: 30, windowMs: 5 * 60_000 },
   voprfPerUser: { scope: "voprf-user", limit: 30, windowMs: 60_000 },
+  // The compose form's same-buyer hint (/api/asks/similar). Kept well below the
+  // evaluate ceiling on purpose (F-02): the count endpoint is a cleaner
+  // confirmation/volume channel than scanning the board, so it must not be a
+  // fast oracle. The debounced compose form needs only a few calls per session;
+  // a script probing tokens hits this wall quickly. Cost control, not a
+  // pseudonymity control.
+  similarPerUser: { scope: "asks-similar", limit: 8, windowMs: 60_000 },
   // Raising a dispute is a real, mutual, operator-flagged act; a member never
   // needs to fire many in a burst. This caps a script spraying disputes to
   // disarm gates faster than an operator can rule, without ever blocking a

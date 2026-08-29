@@ -15,12 +15,22 @@
  *
  * Auth required: the counts are board data, and the board is members-only.
  * Hidden asks count nowhere, same as every other surface.
+ *
+ * Rate limited hard (F-02). A member can already de-anonymize the small
+ * known-buyer dictionary via the /api/voprf/evaluate oracle; this endpoint is a
+ * cleaner confirmation/volume channel because it answers "how many open asks
+ * carry this token" without scanning the board. The tight per-user ceiling
+ * (lib/ratelimit.ts similarPerUser, well below the evaluate limit) is DoS/cost
+ * control, NOT a pseudonymity control: it does not stop de-anonymization, it
+ * only keeps this from being a fast oracle. The durable fix is the token
+ * redesign on /transparency/verification section 08. Nothing is logged here.
  */
 
 import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { DbNotConfiguredError, getDb } from "@/lib/db";
 import { isBuyerTokenV2 } from "@/lib/voprf";
+import { RATE_LIMITS, checkRateLimit, retryPhrase } from "@/lib/ratelimit";
 import { CATEGORIES } from "@/lib/taxonomy";
 
 export const runtime = "nodejs";
@@ -41,6 +51,21 @@ export async function GET(request: Request) {
     return NextResponse.json(
       { error: "Missing or malformed blinded buyer token." },
       { status: 400 },
+    );
+  }
+
+  // A hard per-user cap so this cannot be run as a fast token oracle (F-02).
+  const limited = await checkRateLimit(RATE_LIMITS.similarPerUser, user.id);
+  if (limited.limited) {
+    return NextResponse.json(
+      {
+        error: `Too many lookups. Wait ${retryPhrase(limited.retryAfterSeconds)}.`,
+        retryAfterSeconds: limited.retryAfterSeconds,
+      },
+      {
+        status: 429,
+        headers: { "retry-after": String(limited.retryAfterSeconds) },
+      },
     );
   }
 
