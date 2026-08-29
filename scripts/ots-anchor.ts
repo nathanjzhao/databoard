@@ -38,7 +38,7 @@ import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifySth, type Sth } from "../lib/merkle.ts";
+import { verifySth, coreSth, type Sth } from "../lib/merkle.ts";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const OUT_DIR = path.join(ROOT, "docs", "transparency-log");
@@ -87,7 +87,7 @@ async function fromUrl(base: string): Promise<{ sth: Sth; publicKey: string }> {
   ]);
   if (!sthRes.ok) throw new Error(`GET ${trimmed}/api/translog/sth -> ${sthRes.status}`);
   if (!keyRes.ok) throw new Error(`GET ${trimmed}/api/translog/pubkey -> ${keyRes.status}`);
-  const sth = (await sthRes.json()) as Sth;
+  const sth = coreSth((await sthRes.json()) as Sth);
   const { publicKey } = (await keyRes.json()) as { publicKey: string };
   return { sth, publicKey };
 }

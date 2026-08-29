@@ -1,0 +1,74 @@
+name: witness-translog
+
+# An INDEPENDENT witness for the transparency log (C2SP tlog-witness / sigsum).
+# It runs scripts/witness.ts with ITS OWN Ed25519 key (the WITNESS_ED25519_SEED
+# secret, separate from anything the anchor job or the app uses), cosigns the
+# live head only after verifying an RFC 6962 consistency proof from the head it
+# last cosigned, and commits the cosignature under
+# docs/transparency-log/witnesses/. The runner also POSTs the cosignature to
+# /api/translog/add-checkpoint so the live signed head carries it.
+#
+# This job is deliberately SEPARATE from anchor.yml: different schedule,
+# different key, so the two are not one failure domain. It is still an
+# OPERATOR-run witness, which is only partial independence (it raises the fork
+# bar to "the operator's own witness must double-sign"). True independence is a
+# THIRD PARTY running scripts/witness.ts on their own infra with their own key;
+# docs/transparency-log/README.md explains how they join the registry.
+
+on:
+  schedule:
+    # A few times a day, offset from the anchor job's 06:17 so they do not run
+    # as one batch. A run with no new leaves re-posts the same cosignature and
+    # commits nothing.
+    - cron: "43 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Base URL of the deployment to witness"
+        required: false
+        default: "https://getdataboard.vercel.app"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: witness-translog
+  cancel-in-progress: false
+
+jobs:
+  witness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Cosign the current signed tree head
+        run: node scripts/witness.ts --url "${URL}"
+        env:
+          URL: ${{ github.event.inputs.url || 'https://getdataboard.vercel.app' }}
+          # The witness's OWN key, independent of the log key and the anchor job.
+          # If unset, the runner falls back to the checked-in dev key, which is
+          # NOT independent; set this secret to run a real operator witness.
+          WITNESS_ED25519_SEED: ${{ secrets.WITNESS_ED25519_SEED }}
+          WITNESS_KEY_NAME: databoard-witness-ci
+
+      - name: Commit the cosignature if it changed
+        run: |
+          if [ -n "$(git status --porcelain docs/transparency-log/witnesses)" ]; then
+            git config user.name "databoard-witness"
+            git config user.email "witness@users.noreply.github.com"
+            git add docs/transparency-log/witnesses
+            SIZE="$(git diff --cached --name-only | sed -nE 's#.*/cosig-([0-9]+)\.json#\1#p' | sort -n | tail -1)"
+            git commit -m "witness: cosigned transparency log head at size ${SIZE:-unknown}"
+            git push
+          else
+            echo "No new head to cosign."
+          fi

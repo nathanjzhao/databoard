@@ -14,12 +14,12 @@ portable proof.
 
 ## What is here
 
-- `sth-<treeSize>.json` — the full signed tree head at that size, one file per
+- `sth-<treeSize>.json`: the full signed tree head at that size, one file per
   size, written once and never overwritten. Each is
   `{ v, logId, treeSize, rootHash, timestamp, signature }`.
-- `anchors.ndjson` — one appended line per anchoring run, so the sequence of
+- `anchors.ndjson`: one appended line per anchoring run, so the sequence of
   observed heads is itself a log.
-- `FORK-size-*.json` — written **only** if the anchor script ever sees a
+- `FORK-size-*.json`: written **only** if the anchor script ever sees a
   different root at a size it already anchored. Its presence is an alarm.
 
 ## How anchors get here
@@ -55,20 +55,104 @@ force-push can quietly alter without detection.
   must verify against `/api/translog/pubkey`. If a live head at a size you
   anchored ever shows a different root, the log was rewritten.
 
-## The stronger anchor (future work)
+## Independent witnesses (C2SP tlog-witness / sigsum)
 
-Committing to our own repo is a real witness, but the repo is still ours. Two
-upgrades make it independent, and are named here so the gap is a roadmap, not a
-shrug:
+The git and OTS anchors above are external, but a witness is a stronger thing:
+a party that holds its own Ed25519 key and its own memory of the last head it
+accepted, and **refuses to cosign a new head** unless the log proves, with an
+RFC 6962 consistency proof, that the new head is an append-only extension of the
+exact head that witness last saw. Once N recognized witnesses have cosigned a
+head, a client that requires that quorum will not trust any head those witnesses
+did not cosign, so an operator fork has to make a witness double-sign: collude,
+leak a key, or roll its state back.
 
-1. **A public timestamp.** Stamp each `sth-<treeSize>.json` with a service like
-   [OpenTimestamps](https://opentimestamps.org/): `ots stamp
-   docs/transparency-log/sth-<n>.json` produces a `.ots` receipt anchored in
-   the Bitcoin blockchain, proving the head existed at a time we cannot backdate.
-   The file this script writes is exactly what you would stamp; wire the `ots`
-   call into the workflow when you want it (no code change here needed).
-2. **Independent co-signing witnesses.** Other parties fetch the head, check
-   consistency against the last head they saw, and co-sign it. A fork then has
-   to fool every witness at once. This is the sigsum / CT witness model and is
-   the real endgame, together with holding the log key inside a TEE so the
-   running code proves its own identity.
+This is implemented:
+
+- `lib/witness.ts`: the pure, isomorphic protocol (verify the log signature,
+  require `old` == the witness's last cosigned size, verify the consistency
+  proof `old -> new`, cosign). It also verifies cosignatures and checks the
+  quorum, so the browser and `scripts/verify-log.sh` run the same code.
+- `scripts/witness.ts`: a runnable witness with its own key.
+- `.github/workflows/witness.yml`: a scheduled job that runs a witness with a
+  secret key (`WITNESS_ED25519_SEED`), independent of the anchor job, and
+  commits cosignatures under `docs/transparency-log/witnesses/`.
+- `POST /api/translog/add-checkpoint`: where a witness posts its cosignature so
+  the live head (`/api/translog/sth`) carries it.
+- `GET /api/translog/witnesses`: the recognized-witness registry and the
+  required quorum N.
+
+### Cosignature format
+
+A cosignature is canonical JSON and binds the witness key to a specific
+`(logId, treeSize, rootHash)`:
+
+```json
+{
+  "v": 1,
+  "witnessId": "<sha256 of the witness public key hex>",
+  "keyName": "databoard-witness-ci",
+  "logId": "<sha256 of the log public key>",
+  "treeSize": 42,
+  "rootHash": "<hex>",
+  "cosignedAt": 1730000000000,
+  "publicKey": "<witness ed25519 public key hex>",
+  "signature": "<ed25519 over the body, hex>"
+}
+```
+
+The signed body is the same object without `signature` and `publicKey`, plus a
+`domain` tag, canonicalized (see `witnessCosignatureBody`). It deliberately does
+**not** cover the log's own timestamp, so a cosignature verifies against any STH
+with the same `logId`/`treeSize`/`rootHash`.
+
+### The quorum policy (2N > M)
+
+Clients require **N of M** recognized cosignatures before trusting a head.
+Requiring N such that `2N > M` guarantees any two heads that each reach a quorum
+share at least one witness, so an operator fork at the same size would need a
+recognized witness to have cosigned two different roots, a double-sign that is
+itself portable proof. With a single operator-run witness (M = 1, N = 1) the
+property is weaker: a fork then only needs that one witness to collude or leak
+its key. **A witness the operator runs is only partial independence.** Real fork
+resistance needs multiple EXTERNAL witnesses.
+
+### Run a witness yourself (third party)
+
+You do not need our permission, our database, or our infra. You need Node 24, a
+checkout of this repo, and your own key.
+
+```sh
+# 1. Generate your own Ed25519 witness key (32-byte seed, hex).
+node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))'
+
+# 2. Cosign the live head with it. The runner fetches the head + the log key,
+#    verifies the log signature and the consistency proof from the head you last
+#    cosigned, cosigns, writes docs/transparency-log/witnesses/<key>/, and POSTs
+#    the cosignature to /api/translog/add-checkpoint.
+WITNESS_ED25519_SEED=<your 64-hex seed> \
+WITNESS_KEY_NAME=acme-witness \
+  node scripts/witness.ts --url https://getdataboard.vercel.app
+
+# Commit-only (no POST back to the log), e.g. a fully offline witness:
+WITNESS_ED25519_SEED=<seed> node scripts/witness.ts --url https://getdataboard.vercel.app --no-push
+```
+
+Your durable state lives under `docs/transparency-log/witnesses/<key>/state.json`
+(the last head you cosigned); set `WITNESS_STATE_DIR` to keep it somewhere else,
+outside this repo's tree. If the log ever presents a head that is **not** a
+consistent extension of that state, the runner writes a `FORK-*.json` alarm and
+exits nonzero instead of cosigning: that file is the portable evidence a fork
+happened.
+
+To have your cosignatures **count** toward the quorum, your public key has to be
+in the recognized registry. Add it via `WITNESS_REGISTRY_JSON` (a JSON array of
+`{ keyName, publicKey, operator?, url? }`) and raise `WITNESS_QUORUM_N` so
+`2N > M`. That is deployment config, not a code change; a third party who wants
+to be counted opens a PR adding their `{ keyName, publicKey }` to the registry.
+
+### The remaining upgrade
+
+The witness key can still be lost or coerced. Holding the log key (and,
+eventually, a witness key) inside measured hardware (a TEE) so the running code
+proves its own identity is the next step, together with a public timestamp on
+each `sth-<n>.json` (already done here via OpenTimestamps under `ots/`).
