@@ -85,8 +85,15 @@ const MANIFEST_VERSION = 2;
 const FLIGHT_GLOBAL = "__next_f";
 /** The default repo identity, overridable by GITHUB_REPOSITORY in Actions. */
 const DEFAULT_REPO = "nathanjzhao/databoard";
-/** The workflow whose identity attests this manifest's digest. */
-const ATTEST_WORKFLOW = ".github/workflows/ci.yml";
+/**
+ * The workflow whose identity attests this manifest's digest. The deployed
+ * bytes are attested by deploy-prebuilt.yml (it builds AND deploys the same
+ * output), so that workflow sets ATTEST_WORKFLOW; ci.yml keeps its default and
+ * attests its own build. verify-served-js.sh reads this back out of the served
+ * manifest, so pinning follows whichever workflow actually signed the digest.
+ */
+const ATTEST_WORKFLOW =
+  process.env.ATTEST_WORKFLOW || ".github/workflows/ci.yml";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const servedPath = path.join(root, "lib", "js-manifest.generated.json");

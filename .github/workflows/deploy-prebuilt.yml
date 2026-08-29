@@ -1,0 +1,48 @@
+# Deploy the CI-built, CI-attested artifact to Vercel with --prebuilt, so the
+# bytes prod serves ARE the bytes this workflow attested. Without this, Vercel
+# rebuilds independently and the live served-JS manifest has no attestation
+# (verify-served-js.sh --attest then fails loudly rather than lying). This
+# closes that loop: build here, attest the served manifest, deploy that exact
+# output. Needs repo secrets VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID.
+name: deploy-prebuilt
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  id-token: write        # Sigstore OIDC for the provenance attestation
+  attestations: write
+concurrency:
+  group: deploy-prebuilt
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      # Pin generateBuildId to the commit so .next/static/<id> is stable and the
+      # attested manifest matches what the prebuilt output serves.
+      VERCEL_GIT_COMMIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Vercel pull (project settings + prod env)
+        run: npx vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+      - name: Vercel build (runs our build script; writes the served manifest)
+        env:
+          ATTEST_WORKFLOW: .github/workflows/deploy-prebuilt.yml
+        run: npx vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+      - name: Attest the served-JS manifest (same bytes the site serves)
+        id: attest
+        continue-on-error: true
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: .next/build-manifest.sha256.json
+      - name: Deploy the prebuilt output (Vercel does not rebuild)
+        run: npx vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}
