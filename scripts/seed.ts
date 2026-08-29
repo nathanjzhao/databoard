@@ -17,7 +17,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { closeDb, getDb, now } from "../lib/db.ts";
-import { createUser } from "../lib/auth.ts";
+import { createUser, ensureKdfSalt } from "../lib/auth.ts";
 import { newId, normalizeContact } from "../lib/crypto.ts";
 import { buyerChip } from "../lib/voprf.ts";
 import { serverMintBuyerTokenV2 } from "../app/api/voprf/server.ts";
@@ -545,6 +545,7 @@ async function main() {
     "sessions",
     "user_signing_keys",
     "user_e2ee_keys",
+    "user_kdf_salt",
     "users",
   ]) {
     await db.execute(`DELETE FROM ${table}`);
@@ -562,10 +563,12 @@ async function main() {
     );
     if (!created.ok) throw new Error(`seed user ${u.username}: ${created.error}`);
     userIds.set(u.username, created.user.id);
-    // The same client-side derivation the signup page runs (lib/e2ee.ts),
-    // so signing in as a demo user in a real browser derives the private
-    // key that opens the threads seeded below.
-    const keys = await deriveIdentityKeys(u.username, DEMO_PASSWORD);
+    // Mint the per-user KDF salt exactly as signup does (F-01), and derive the
+    // keys under it: signing in as a demo user in a real browser fetches this
+    // same salt at login and derives the identical keys that open the threads
+    // and match the signing directory seeded below.
+    const kdfSalt = await ensureKdfSalt(created.user.id);
+    const keys = await deriveIdentityKeys(u.username, DEMO_PASSWORD, kdfSalt);
     userKeys.set(u.username, keys);
     await db.execute({
       sql: `INSERT INTO user_e2ee_keys (user_id, pubkey, created_at) VALUES (?, ?, ?)`,
@@ -1014,7 +1017,7 @@ async function main() {
       "demo dataset (synthetic): 8 household-robotics episodes, sensor+3d, off-platform in production",
     );
     const enc = await encryptDataset(sessionId, dataset, dek);
-    const dekCommit = dekCommitHex(dealId, dekSalt, dek);
+    const dekCommit = dekCommitHex(dealId, enc.ciphertextRoot, dekSalt, dek);
 
     const commitLeaf: ExchangeLeaf = {
       v: EXCHANGE_VERSION,

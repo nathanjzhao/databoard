@@ -442,6 +442,7 @@ test("09 THE PRIVACY CLAIM: no PII string appears in any row of any table", asyn
     "translog_heads",
     "translog_leaves",
     "user_e2ee_keys",
+    "user_kdf_salt",
     "user_signing_keys",
     "users",
   ]);

@@ -908,9 +908,10 @@ test("PARTY REC party-signs DEAL_M's receipt with their own key; the sig binds a
   expect(ver.valid).toEqual([REC.handle]);
   expect(ver.allSigned).toBe(false); // PART still owes a signature
 
-  // The public signing directory serves REC's registered key, and it is the
-  // exact pubkey the receipt's roster carries: the verifier's directory check.
-  const dir = await request.get(`/api/signing/pubkey?handle=${REC.handle}`);
+  // The signing directory is session-gated now (F-01); REC's own logged-in
+  // session reads it, and it serves REC's registered key, the exact pubkey the
+  // receipt's roster carries: the verifier's directory cross-check.
+  const dir = await page.request.get(`/api/signing/pubkey?handle=${REC.handle}`);
   const { pubkey } = (await dir.json()) as { pubkey: string };
   expect(pubkey).toMatch(/^[A-Za-z0-9_-]{43}$/);
   const recSigner = body.receipt.attest!.signers.find((s) => s.handle === REC.handle)!;

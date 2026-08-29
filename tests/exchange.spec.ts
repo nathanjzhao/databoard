@@ -136,8 +136,23 @@ async function clearRateLimits() {
 
 /* --------------------------------------------------------------- crypto */
 
+/** This account's per-user KDF salt (user_kdf_salt), the one signup registered. */
+async function saltFor(handle: string): Promise<string | undefined> {
+  const c = db();
+  const rs = await c.execute({
+    sql: `SELECT s.salt FROM user_kdf_salt s JOIN users u ON u.id = s.user_id
+           WHERE u.username = ?`,
+    args: [handle],
+  });
+  c.close();
+  return rs.rows[0] ? String(rs.rows[0].salt) : undefined;
+}
+
+// The signing key is derived under the account's per-user KDF salt (F-01), so
+// it equals the key the browser signup registered and the exchange append path
+// verifies against.
 async function keysFor(handle: string) {
-  return deriveSigningKeys(handle, PW);
+  return deriveSigningKeys(handle, PW, await saltFor(handle));
 }
 
 function commitLeaf(args: {
@@ -426,7 +441,7 @@ test("PURE encrypt/manifest round-trips; wrong key, tampered chunk and swapped r
   tamperedBlob[20] ^= 0x01;
   expect(ciphertextRootOf(tamperedBlob, enc.chunkSize, enc.chunkCount)).not.toBe(enc.ciphertextRoot);
 
-  const dekCommit = dekCommitHex(dealId, salt, dek);
+  const dekCommit = dekCommitHex(dealId, enc.ciphertextRoot, salt, dek);
   const good = await decryptAndVerify({
     sessionId, dealId, blob: enc.ciphertext, dek, dekSalt: salt, dekCommit,
     chunkSize: enc.chunkSize, chunkCount: enc.chunkCount, plaintextRoot: enc.plaintextRoot,
@@ -739,7 +754,7 @@ test("EX-1 seller commits: encrypted, signed, wire reference minted, server stor
   const nonce = wireNonce();
   const n15 = n15Of(dealId, nonce);
   const enc = await encryptDataset(sessionId, new TextEncoder().encode(DATASET), dek, CHUNK);
-  const dekCommit = dekCommitHex(dealId, dekSalt, dek);
+  const dekCommit = dekCommitHex(dealId, enc.ciphertextRoot, dekSalt, dek);
   const leaf = commitLeaf({ sessionId, dealId, seller: SELLER.handle, buyer: BUYER.handle, enc, dekCommit, dekSalt, n15, nonce });
 
   const res = await postSigned(sellerCtx.request, `${BASE}/api/exchange`, leaf, sellerKeys);
@@ -920,7 +935,7 @@ test("EX-6 GUARDS: a stranger key, an out-of-order step, and a non-party read ar
   const dek = generateDek();
   const dekSalt = new Uint8Array(16);
   const enc = await encryptDataset(sessionId, new TextEncoder().encode("guardrail dataset"), dek, CHUNK);
-  const leaf = commitLeaf({ sessionId, dealId, seller: SELLER.handle, buyer: BUYER.handle, enc, dekCommit: dekCommitHex(dealId, dekSalt, dek), dekSalt });
+  const leaf = commitLeaf({ sessionId, dealId, seller: SELLER.handle, buyer: BUYER.handle, enc, dekCommit: dekCommitHex(dealId, enc.ciphertextRoot, dekSalt, dek), dekSalt });
   expect((await postSigned(sellerCtx.request, `${BASE}/api/exchange`, leaf, sellerKeys)).status()).toBe(201);
   await sellerCtx.request.post(`${BASE}/api/exchange/${sessionId}/blob`, { data: { ciphertext: toB64url(enc.ciphertext) } });
   const session = await fetchSession(buyerCtx.request, sessionId);
@@ -1070,10 +1085,18 @@ test("SIG-1 both parties sign the co-attested receipt; verify shows both sigs va
   expect(ver.invalid).toEqual([]);
   expect(ver.allSigned, "every named party signed with their own key").toBe(true);
 
-  // The public directory serves each party's registered key and it equals the
-  // pubkey the receipt's roster carries: the verifier's directory check.
+  // The directory is session-gated now (F-01): an UNAUTHENTICATED read is
+  // bounced, not answered. This is the guard that fails against the old public
+  // directory, the offline password oracle we closed.
+  const anon = await request.get(`${BASE}/api/signing/pubkey?handle=${SELLER.handle}`, {
+    maxRedirects: 0,
+  });
+  expect(anon.status(), "anon directory read is blocked").not.toBe(200);
+  // A signed-in caller (the seller's own session) still gets the directory, and
+  // each party's registered key equals the pubkey the receipt's roster carries:
+  // the verifier's directory cross-check.
   for (const s of fields1.signers) {
-    const dir = await request.get(`${BASE}/api/signing/pubkey?handle=${s.handle}`);
+    const dir = await sellerCtx.request.get(`${BASE}/api/signing/pubkey?handle=${s.handle}`);
     expect((await dir.json()).pubkey).toBe(s.pubkey);
   }
 
@@ -1159,7 +1182,7 @@ test("SIG-2 the platform alone cannot forge a co-attested receipt: a wrong-key p
   expect(ver.valid).toEqual([BUYER.handle]);
   expect(ver.invalid).toEqual([SELLER.handle]);
   expect(ver.allSigned).toBe(false);
-  const dir = await request.get(`${BASE}/api/signing/pubkey?handle=${SELLER.handle}`);
+  const dir = await sellerCtx.request.get(`${BASE}/api/signing/pubkey?handle=${SELLER.handle}`);
   expect((await dir.json()).pubkey, "the directory holds the real key, not the forger's").toBe(
     sellerReg,
   );
@@ -1224,7 +1247,7 @@ test("EXCH-cheat the seller stops after the buyer paid; the signed chain proves 
     enc.chunkCount,
     "the dataset chunked, so a stop-after-receiving caps exposure to one chunk",
   ).toBeGreaterThan(1);
-  const dekCommit = dekCommitHex(dealId, dekSalt, dek);
+  const dekCommit = dekCommitHex(dealId, enc.ciphertextRoot, dekSalt, dek);
   const commit = commitLeaf({ sessionId, dealId, seller: SELLER.handle, buyer: BUYER.handle, enc, dekCommit, dekSalt });
   expect((await postSigned(sellerCtx.request, `${BASE}/api/exchange`, commit, sellerKeys)).status()).toBe(201);
   await sellerCtx.request.post(`${BASE}/api/exchange/${sessionId}/blob`, {

@@ -26,6 +26,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { KNOWN_BUYERS } from "../lib/buyers";
 import { deriveIdentityKeys, toB64url } from "../lib/e2ee";
+import { passwordProblem } from "../lib/crypto";
 import { unusedInviteCode } from "./invite-codes";
 
 const ROOT = path.resolve(__dirname, "..");
@@ -346,16 +347,36 @@ test.afterAll(async () => {
 
 /* ----------------------------------------------------------- (1) E2EE */
 
-test("1a F and G sign up; each registers exactly the pubkey their password derives", async () => {
+/** This account's per-user KDF salt (user_kdf_salt), read straight from the DB. */
+async function saltFor(username: string): Promise<string | undefined> {
+  const client = createClient({ url: `file:${DB_PATH}` });
+  const rs = await client.execute({
+    sql: `SELECT s.salt FROM user_kdf_salt s JOIN users u ON u.id = s.user_id
+           WHERE u.username = ?`,
+    args: [username],
+  });
+  client.close();
+  return rs.rows[0] ? String(rs.rows[0].salt) : undefined;
+}
+
+test("1a F and G sign up; each registers exactly the pubkey their password derives", async ({
+  request,
+}) => {
   await signUp(page, USER_F);
   await signOut(page);
   await signUp(page, USER_G);
   await shot(page, "01a-signups-done.png");
 
   // The write-once server-side key must be the client-side derivation,
-  // reproduced here in node from username + password alone.
-  const fKeys = await deriveIdentityKeys(USER_F.username, USER_F.password);
-  const gKeys = await deriveIdentityKeys(USER_G.username, USER_G.password);
+  // reproduced here in node from username + password + the account's per-user
+  // KDF salt (F-01). The salt is the whole point: without it the derivation
+  // cannot be reproduced from public data alone.
+  const fSalt = await saltFor(USER_F.username);
+  const gSalt = await saltFor(USER_G.username);
+  expect(fSalt, "F got a KDF salt at signup").toBeTruthy();
+  expect(gSalt, "G got a KDF salt at signup").toBeTruthy();
+  const fKeys = await deriveIdentityKeys(USER_F.username, USER_F.password, fSalt);
+  const gKeys = await deriveIdentityKeys(USER_G.username, USER_G.password, gSalt);
   const client = createClient({ url: `file:${DB_PATH}` });
   const rs = await client.execute(
     `SELECT u.username, k.pubkey FROM user_e2ee_keys k JOIN users u ON u.id = k.user_id
@@ -365,6 +386,30 @@ test("1a F and G sign up; each registers exactly the pubkey their password deriv
   const byUser = new Map(rs.rows.map((r) => [String(r.username), String(r.pubkey)]));
   expect(byUser.get(USER_F.username)).toBe(fKeys.publicKey);
   expect(byUser.get(USER_G.username)).toBe(gKeys.publicKey);
+
+  // F-01 GUARD (fails against the pre-salt code): the published pubkey is NO
+  // LONGER a pure function of (password, handle). The UNSALTED derivation, which
+  // is exactly what an offline attacker holding only the public handle could
+  // run, does not reproduce the registered key.
+  const fUnsalted = await deriveIdentityKeys(USER_F.username, USER_F.password);
+  expect(
+    fUnsalted.publicKey,
+    "unsalted derivation must NOT match the registered key",
+  ).not.toBe(byUser.get(USER_F.username));
+
+  // F-01 GUARD: the signing-key directory is session-gated, so an
+  // unauthenticated read is bounced rather than serving key material.
+  const anon = await request.get(`/api/signing/pubkey?handle=${USER_F.username}`, {
+    maxRedirects: 0,
+  });
+  expect(anon.status(), "anon directory read is blocked").not.toBe(200);
+
+  // F-01 GUARD: the password floor rose and a weak/short password is refused,
+  // while a passphrase (the app's own advice) still passes.
+  expect(passwordProblem("short"), "too short").toBeTruthy();
+  expect(passwordProblem("aaaaaaaaaaaaaaaa"), "too repetitive").toBeTruthy();
+  expect(passwordProblem("passwordpassword"), "common weak password").toBeTruthy();
+  expect(passwordProblem(USER_F.password), "a passphrase passes").toBeNull();
 });
 
 test("1b F posts the Anthropic ask; G requests collab on it", async () => {
@@ -454,10 +499,11 @@ test("1e THE E2EE CLAIM: ciphertext only in the DB; no private key material anyw
   expect(envelopes.length).toBe(2);
   expect(keys.rows.length).toBe(2); // one wrap per seat, no more
 
-  // No private key material: the exact secrets both accounts derive, in
-  // both encodings, appear neither in the DB nor in any API response body.
-  const fKeys = await deriveIdentityKeys(USER_F.username, USER_F.password);
-  const gKeys = await deriveIdentityKeys(USER_G.username, USER_G.password);
+  // No private key material: the exact secrets both accounts derive (under
+  // their per-user KDF salt, the real keys they use), in both encodings, appear
+  // neither in the DB nor in any API response body.
+  const fKeys = await deriveIdentityKeys(USER_F.username, USER_F.password, await saltFor(USER_F.username));
+  const gKeys = await deriveIdentityKeys(USER_G.username, USER_G.password, await saltFor(USER_G.username));
   const secrets = [
     toB64url(fKeys.secretKey),
     toB64url(gKeys.secretKey),

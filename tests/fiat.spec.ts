@@ -183,8 +183,22 @@ function numbersIn(v: unknown, out: number[] = []): number[] {
 
 /* --------------------------------------------------------------- crypto */
 
+/** This account's per-user KDF salt (user_kdf_salt), the one signup registered. */
+async function saltFor(handle: string): Promise<string | undefined> {
+  const c = db();
+  const rs = await c.execute({
+    sql: `SELECT s.salt FROM user_kdf_salt s JOIN users u ON u.id = s.user_id
+           WHERE u.username = ?`,
+    args: [handle],
+  });
+  c.close();
+  return rs.rows[0] ? String(rs.rows[0].salt) : undefined;
+}
+
+// Derived under the account's per-user KDF salt (F-01), matching the key the
+// browser signup registered and the exchange append path verifies against.
 async function keysFor(handle: string) {
-  return deriveSigningKeys(handle, PW);
+  return deriveSigningKeys(handle, PW, await saltFor(handle));
 }
 
 function flipB64(s: string): string {
@@ -361,7 +375,7 @@ async function openSession(
   const nonce = wireNonce();
   const n15 = n15Of(dealId, nonce);
   const enc = await encryptDataset(sessionId, new TextEncoder().encode(DATASET), dek, CHUNK);
-  const dekCommit = dekCommitHex(dealId, dekSalt, dek);
+  const dekCommit = dekCommitHex(dealId, enc.ciphertextRoot, dekSalt, dek);
   const leaf = commitLeaf({ sessionId, dealId, seller: SELLER.handle, buyer: BUYER.handle, enc, dekCommit, dekSalt, n15, nonce });
   const res = await postSigned(ctx.request, `${BASE}/api/exchange`, leaf, keys);
   expect(res.status(), await res.text()).toBe(201);

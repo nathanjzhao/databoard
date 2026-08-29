@@ -1021,6 +1021,7 @@ test("08 PRIVACY: no PII, no buyer name, no evidence document content anywhere i
     "translog_heads",
     "translog_leaves",
     "user_e2ee_keys",
+    "user_kdf_salt",
     "user_signing_keys",
     "users",
   ]);

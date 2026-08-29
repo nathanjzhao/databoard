@@ -726,6 +726,7 @@ test("10 PRIVACY: no PII string appears in any row of any table, new tables incl
     "translog_heads",
     "translog_leaves",
     "user_e2ee_keys",
+    "user_kdf_salt",
     "user_signing_keys",
     "users",
   ]);
