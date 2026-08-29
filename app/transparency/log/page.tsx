@@ -16,11 +16,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { DbNotConfiguredNotice, PageStub } from "@/components/page-stub";
 import { isDbConfigured } from "@/lib/db";
-import { getSignedHead, listSignedHeads, logPublicKeyHex, logId } from "@/lib/translog";
+import { getWitnessedHead, listSignedHeads, logPublicKeyHex, logId } from "@/lib/translog";
 import { TRANSLOG_HKDF_LABEL } from "@/lib/translog";
+import { recognizedWitnesses, witnessQuorumN, isUsingDevWitnessKey } from "@/lib/witnesses";
 import { isUsingDevPepper } from "@/lib/crypto";
 import { LogVerifier } from "@/components/transparency/log-verifier";
 import type { Sth } from "@/lib/merkle";
+import type { WitnessedSth, RecognizedWitness } from "@/lib/witness";
 
 export const metadata: Metadata = {
   title: "Transparency log",
@@ -51,15 +53,20 @@ export default async function TransparencyLogPage() {
 
   const pubKey = logPublicKeyHex();
   const id = logId();
-  let sth: Sth | null = null;
+  let sth: WitnessedSth | null = null;
   let heads: Sth[] = [];
   try {
-    sth = await getSignedHead();
+    sth = await getWitnessedHead();
     heads = await listSignedHeads(30);
   } catch {
     // Rendered as unavailable below; the API endpoints are the fallback.
   }
   const devPepper = isUsingDevPepper();
+  const witnesses = recognizedWitnesses();
+  const quorumN = witnessQuorumN();
+  const independentCount = witnesses.filter((w) => !w.operator).length;
+  const devWitness = isUsingDevWitnessKey();
+  const forkResistant = 2 * quorumN > witnesses.length && independentCount >= quorumN;
 
   return (
     <div className="mx-auto w-full max-w-[1000px] px-5 py-14">
@@ -96,6 +103,30 @@ export default async function TransparencyLogPage() {
             <Field label="Signature" wide>
               {sth.signature}
             </Field>
+            <div className="flex flex-col gap-0.5 sm:col-span-2">
+              <dt className="bt-label">Witnesses</dt>
+              <dd className="text-[0.8125rem] leading-snug">
+                {sth.witnessing.met ? (
+                  <span className="font-medium text-green">
+                    Witnessed: {sth.witnessing.present} of {sth.witnessing.required} required
+                    cosignature{sth.witnessing.required === 1 ? "" : "s"} present.
+                  </span>
+                ) : (
+                  <span className="font-medium text-amber">
+                    Unwitnessed: {sth.witnessing.present} of {sth.witnessing.required} required
+                    cosignature{sth.witnessing.required === 1 ? "" : "s"} present. A client requiring the
+                    quorum treats this head as untrusted.
+                  </span>
+                )}
+                {sth.cosignatures.length > 0 ? (
+                  <span className="mt-1 block font-mono text-[0.6875rem] text-ink-faint">
+                    {sth.cosignatures
+                      .map((c) => `${c.keyName || c.witnessId.slice(0, 8)}`)
+                      .join(", ")}
+                  </span>
+                ) : null}
+              </dd>
+            </div>
           </dl>
         ) : (
           <p className="mt-3 border border-rule bg-panel px-5 py-4 text-[0.8125rem] text-ink-faint">
@@ -217,6 +248,117 @@ export default async function TransparencyLogPage() {
         )}
       </section>
 
+      {/* --------------------------------------------- independent witnesses */}
+      <section className="mt-12">
+        <h2 className="bt-display text-[1.65rem] leading-[1.1] text-ink">
+          Independent witnesses cosign the head
+        </h2>
+        <p className="mt-3 max-w-[68ch] text-[0.9375rem] leading-relaxed text-ink-dim">
+          A witness holds its own Ed25519 key and its own memory of the last head
+          it accepted. It cosigns a new head only after checking the log&apos;s
+          signature and an RFC 6962 consistency proof from the exact head it last
+          saw, so it will not cosign a rewritten or forked history. This is the
+          C2SP tlog-witness / sigsum model. Once enough recognized witnesses have
+          cosigned a head, a client that requires the quorum will not trust any
+          head those witnesses did not cosign, so an operator fork has to make a
+          witness double-sign: collude, leak a key, or roll back state. The
+          registry and the required count are served at{" "}
+          <a href="/api/translog/witnesses" className="font-mono text-blue hover:text-amber">
+            /api/translog/witnesses
+          </a>{" "}
+          and the cosignatures ride on{" "}
+          <a href="/api/translog/sth" className="font-mono text-blue hover:text-amber">
+            /api/translog/sth
+          </a>
+          .
+        </p>
+
+        <dl className="mt-4 grid grid-cols-2 gap-x-10 gap-y-3 border border-rule-strong bg-panel px-5 py-4 sm:grid-cols-4">
+          <Field label="Quorum required">
+            {quorumN} of {witnesses.length}
+          </Field>
+          <Field label="Recognized">{witnesses.length}</Field>
+          <Field label="Independent">{independentCount}</Field>
+          <Field label="Fork-resistant quorum">
+            <span className={forkResistant ? "text-green" : "text-amber"}>
+              {forkResistant ? "yes (2N > M)" : "partial"}
+            </span>
+          </Field>
+        </dl>
+
+        {witnesses.length > 0 ? (
+          <div className="mt-3 overflow-x-auto border border-rule">
+            <table className="w-full border-collapse text-left text-[0.75rem]">
+              <thead>
+                <tr className="border-b border-rule bg-panel-2 text-ink-faint">
+                  <th className="px-3 py-2 font-medium">Witness</th>
+                  <th className="px-3 py-2 font-medium">Role</th>
+                  <th className="px-3 py-2 font-medium">Public key</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono">
+                {witnesses.map((w: RecognizedWitness) => (
+                  <tr key={w.witnessId} className="border-b border-rule last:border-b-0">
+                    <td className="px-3 py-2 text-ink">{w.keyName}</td>
+                    <td className="px-3 py-2">
+                      <span className={w.operator ? "text-amber" : "text-green"}>
+                        {w.operator ? "operator-run" : "external"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-ink-dim">
+                      <span className="break-all">{w.publicKey.slice(0, 24)}…</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+
+        <div className="mt-4 border-l-2 border-amber bg-amber-wash px-4 py-3.5">
+          <div className="bt-label text-amber">Partial independence, stated plainly</div>
+          <p className="mt-2 max-w-[66ch] text-[0.8438rem] leading-relaxed text-ink-dim">
+            {independentCount === 0 ? (
+              <>
+                Every witness above is operator-run, so this is not yet real
+                independence: it raises the fork bar to &quot;the operator&apos;s
+                own witness would have to double-sign&quot;, which is worth
+                something (a witness runs on a separate key and separate infra
+                from the log), but a determined operator controls both. True fork
+                resistance needs EXTERNAL witnesses, run by other people on their
+                own machines with their own keys.
+              </>
+            ) : (
+              <>
+                {independentCount} of {witnesses.length} witnesses are external
+                (run by a third party on their own key and infra). Fork resistance
+                is real when the quorum satisfies 2N &gt; M, so any two heads that
+                each reach a quorum must share a witness, and enough of those
+                witnesses are independent. Operator-run witnesses still count, but
+                they are not independence on their own.
+              </>
+            )}{" "}
+            {devWitness ? (
+              <>
+                This instance is running the checked-in DEV witness key, so its
+                cosignatures are deterministic and prove nothing about an outside
+                party. A real deployment sets a secret witness key.
+              </>
+            ) : null}{" "}
+            Anyone can become a witness:{" "}
+            <a
+              href={`${GH_ANCHORS}/README.md`}
+              className="font-mono text-blue hover:text-amber"
+            >
+              docs/transparency-log/README.md
+            </a>{" "}
+            has the runbook (<span className="font-mono">scripts/witness.ts</span>{" "}
+            with your own key), and adding your public key to the registry is a
+            config change, not a code change.
+          </p>
+        </div>
+      </section>
+
       {/* -------------------------------------------------------- honesty */}
       <section className="mt-12 border-t border-rule-strong pt-7">
         <h2 className="bt-display text-[1.65rem] leading-[1.1] text-ink">
@@ -240,10 +382,13 @@ export default async function TransparencyLogPage() {
               The log signing key is HMAC-derived from SERVER_PEPPER, which the
               operator holds, so the operator CAN sign a fork of the log. What
               the design buys is not impossibility but detectability: a
-              consistency proof plus the external anchors means a rewrite of
-              history others have already pulled, or a second fork served to
-              someone else, is caught after the fact. It is append-only against
-              an observer who keeps a head, not append-only by physics.
+              consistency proof, the external anchors, and the witness
+              cosignatures above mean a rewrite of history others have already
+              pulled, or a second fork served to someone else, is caught. With a
+              witness quorum, a fork also has to make a recognized witness
+              double-sign; with only operator-run witnesses that is still the
+              operator&apos;s own key, so detectability, not impossibility, is the
+              honest word until external witnesses join.
             </p>
           </div>
           <div className="border-l-2 border-green bg-green-wash px-4 py-3.5">
@@ -275,13 +420,16 @@ export default async function TransparencyLogPage() {
           <div className="border-l-2 border-rule-strong bg-panel px-4 py-3.5">
             <div className="bt-label">The remaining upgrade</div>
             <p className="mt-2 max-w-[66ch] text-[0.8438rem] leading-relaxed text-ink-dim">
-              Stated so the gap above is a roadmap, not a shrug: independent
-              witnesses that co-sign the tree head (the sigsum / Certificate
-              Transparency witness model, so no single party, us included, can
-              fork it unnoticed), and a log key held inside measured hardware (a
-              TEE) so the running code proves its own identity. With the Bitcoin
-              anchor already in place, those move &quot;detectable&quot; toward
-              &quot;impossible to attempt.&quot; They are future work.
+              The witness layer (the sigsum / Certificate Transparency
+              cosigning model) is now in place, but its independence is only as
+              real as the witnesses in the registry: today they are operator-run,
+              so the honest word is partial. The remaining upgrades are EXTERNAL
+              witnesses run by other people on their own keys and infra (a config
+              change, not a code change; see the witness section above), and a
+              log key held inside measured hardware (a TEE) so the running code
+              proves its own identity. With the Bitcoin anchor and a real witness
+              quorum, those move &quot;detectable&quot; toward &quot;impossible to
+              attempt.&quot;
             </p>
           </div>
         </div>

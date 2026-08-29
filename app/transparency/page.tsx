@@ -57,6 +57,7 @@ const CONTENTS = [
   ["04", "recovery", "No recovery"],
   ["05", "audit", "Audit it yourself"],
   ["06", "log", "The append-only log"],
+  ["07", "code", "The code we serve"],
 ] as const;
 
 export default async function TransparencyPage() {
@@ -223,10 +224,17 @@ export default async function TransparencyPage() {
                     footer: Vercel builds from the repo, but a malicious
                     deploy could stamp one commit and run another. That the
                     signup contact passing through memory is not logged on the
-                    way. That the JavaScript served to your browser is the
-                    repo&apos;s JavaScript. Layer 1 makes lying here
-                    detectable in the code; it does not yet make it
-                    impossible at runtime.
+                    way. The JavaScript served to your browser used to sit
+                    here too; it now has an installed verifier that checks the
+                    served bytes against a CI-attested manifest (
+                    <Link href="/transparency/code" className="text-blue hover:text-amber">
+                      section 07
+                    </Link>
+                    ), so that one is detection you can run rather than trust
+                    you extend. What stays on our word: that a malicious deploy
+                    did not stamp one commit and run another, and that memory is
+                    not logged. Layer 1 makes lying here detectable in the code;
+                    it does not yet make it impossible at runtime.
                   </p>
                 </div>
               </li>
@@ -240,9 +248,16 @@ export default async function TransparencyPage() {
                     Future work, named so the residue in layer 2 is a roadmap
                     rather than a shrug: TEE attestation, so the pepper and
                     the OPRF key exist only inside measured hardware and the
-                    running code proves its own identity; and JS delivery
-                    verification in the browser, the problem WhatsApp&apos;s
-                    Code Verify addresses. One residue no blinding removes:
+                    running code proves its own identity. JS delivery
+                    verification, the problem WhatsApp&apos;s Code Verify
+                    addresses, has moved from this list into layer 1: an
+                    installed extension and a terminal script now check the
+                    served bytes against a CI-attested manifest (
+                    <Link href="/transparency/code" className="text-blue hover:text-amber">
+                      section 07
+                    </Link>
+                    ), with the reproducibility gap stated there rather than
+                    papered over. One residue no blinding removes:
                     the buyer token is a deterministic function of the name over
                     a short public list of plausible labs, so the mapping from
                     token to name is recoverable by anyone who can evaluate that
@@ -474,6 +489,40 @@ export default async function TransparencyPage() {
                 for the signed head, the public key, the checkpoint history, and
                 a box that verifies inclusion and append-only-ness in your own
                 browser.
+              </p>
+            </div>
+          </TSection>
+
+          <TSection
+            id="code"
+            num="07"
+            title="You can check the code we serve you"
+            lede="Layer 1 above hashes every static asset into a manifest. That manifest is now signed by CI and checkable by a tool that does not come from us, because a page cannot honestly verify itself when the origin is the adversary."
+          >
+            <div className="border border-rule bg-panel px-5 py-4">
+              <p className="max-w-[64ch] text-[0.875rem] leading-relaxed text-ink-dim">
+                CI attests the manifest&apos;s digest with Sigstore (SLSA build
+                provenance), logs it as a leaf in the append-only log above, and
+                publishes it at{" "}
+                <a
+                  href="/api/transparency/js-manifest"
+                  className="font-mono text-blue hover:text-amber"
+                >
+                  /api/transparency/js-manifest
+                </a>
+                . An installed browser extension and a terminal script, both
+                outside this origin, hash the bytes your browser actually ran and
+                check them against it. Stated precisely: this proves the served
+                bytes match a manifest CI attested was built by a named workflow
+                from a named commit. It is detection, not prevention, and it is
+                not a claim of an independent rebuild from source.
+              </p>
+              <p className="mt-4 text-[0.8125rem] leading-relaxed text-ink-dim">
+                <Link href="/transparency/code" className="text-blue hover:text-amber">
+                  Read the full chain and the honest residual
+                </Link>{" "}
+                for the manifest format, the attestation, the log leaf, the
+                installed verifier, and the reproducibility gap.
               </p>
             </div>
           </TSection>
