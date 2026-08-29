@@ -48,8 +48,11 @@ data holder) and a **buyer**.
    under a per-deal key (the DEK) with AES-256-GCM, and builds two RFC 6962
    Merkle manifests: one over the plaintext chunk hashes, one over the
    ciphertext chunk hashes. They commit `plaintext_root`, `ciphertext_root`, and
-   `dek_commit = SHA-256(domain || deal_id || salt || DEK)`, a hash of the key,
-   and sign the commitment with their Ed25519 key.
+   `dek_commit = SHA-256(domain || deal_id || ciphertext_root || salt || DEK)`, a
+   hash of the key that binds it to the exact ciphertext (AES-256-GCM is not
+   key-committing on its own, so folding in the ciphertext root makes a committed
+   ciphertext open to exactly one revealed key), and sign the commitment with
+   their Ed25519 key.
 2. **Deliver (seller, off the exchange server).** The encrypted chunks go to the
    buyer: directly, through the end-to-end-encrypted deal-room thread as
    ciphertext, or, in the demo, through a size-capped opaque blob the server

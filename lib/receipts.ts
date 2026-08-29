@@ -299,8 +299,12 @@ export function partyBaseFieldsFromPayload(
     tier: payload.tier,
     buyerToken: payload.buyerToken,
     amountBucket: payload.amountBucket,
+    buyerIsOther: payload.buyerIsOther,
+    schemaSha256: payload.schemaSha256,
+    commit: payload.commit,
     attestedAt: payload.attestedAt,
     seq: payload.log.seq,
+    participants: payload.participants,
     signers: payload.attest?.signers ?? [],
   };
 }

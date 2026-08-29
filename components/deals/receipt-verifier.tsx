@@ -187,8 +187,12 @@ function baseFieldsFromReceipt(receipt: ReceiptPayload): PartyBaseFields | null 
     tier: receipt.tier,
     buyerToken: receipt.buyerToken,
     amountBucket: receipt.amountBucket,
+    buyerIsOther: receipt.buyerIsOther,
+    schemaSha256: receipt.schemaSha256,
+    commit: receipt.commit,
     attestedAt: receipt.attestedAt,
     seq: receipt.log.seq,
+    participants: receipt.participants,
     signers: receipt.attest.signers,
   };
 }
@@ -197,19 +201,27 @@ type SignerRow = {
   handle: string;
   /** The signature over the base verifies against the pubkey in the receipt. */
   sigValid: boolean;
-  /** Directory check: absent = pending, true = matches, false = mismatch/absent. */
-  keyMatches: boolean | null;
+  /**
+   * Directory cross-check: null = pending, true = matches, false =
+   * mismatch/absent, "unavailable" = the directory needs a session (a
+   * logged-out verifier), so the cross-check was skipped, not failed.
+   */
+  keyMatches: boolean | null | "unavailable";
 };
 
 /**
- * Party-signature verification, done entirely in the browser. Two independent
- * checks per signer: (1) the Ed25519 signature verifies over the recomputed
- * canonical receipt bytes against the pubkey the receipt carries, and (2) that
- * pubkey is the one the public directory (/api/signing/pubkey) serves for the
- * handle. The second closes the loop the operator would otherwise sit inside:
- * without it, a forged receipt could carry a made-up key it also signed with.
- * Honest residual, stated on /transparency: the directory is operator-served,
- * so this is trust-on-first-use, not key transparency.
+ * Party-signature verification, done entirely in the browser. The load-bearing
+ * check is (1): the Ed25519 signature verifies over the recomputed canonical
+ * receipt bytes against the pubkey the receipt CARRIES in its own roster. That
+ * needs no account and no server, so a public verifier is fully able to confirm
+ * a receipt. The second check (2) is a cross-check that the carried pubkey is
+ * also the one the board's directory (/api/signing/pubkey) holds for the handle;
+ * it closes the loop where a forged receipt carries a made-up key it also signed
+ * with. The directory now requires a session (F-01: a public directory was an
+ * offline password oracle), so a logged-out verifier sees this cross-check as
+ * "sign in", not as a failure. Honest residual, stated on /transparency: the
+ * directory is operator-served, so this is trust-on-first-use, not key
+ * transparency.
  */
 function PartyAttestation({ receipt }: { receipt: ReceiptPayload }) {
   const [rows, setRows] = useState<SignerRow[] | null>(null);
@@ -237,23 +249,35 @@ function PartyAttestation({ receipt }: { receipt: ReceiptPayload }) {
 
     (async () => {
       const resolved = await Promise.all(
-        fields.signers.map(async (s) => {
+        fields.signers.map(async (s): Promise<{ handle: string; keyMatches: boolean | "unavailable" }> => {
           try {
             const res = await fetch(
               `/api/signing/pubkey?handle=${encodeURIComponent(s.handle)}`,
+              { headers: { accept: "application/json" } },
             );
-            if (!res.ok) return { handle: s.handle, keyMatches: false };
-            const data = (await res.json()) as { pubkey?: string | null };
+            const data = (await res.json().catch(() => null)) as
+              | { pubkey?: string | null }
+              | null;
+            // The directory is session-gated now (F-01). A logged-out verifier
+            // is bounced (401, or a redirect to the gate that is not our JSON):
+            // that is "cross-check unavailable", not a mismatch. A real answer
+            // always carries a `pubkey` field (possibly null).
+            if (!res.ok || !data || !("pubkey" in data)) {
+              return { handle: s.handle, keyMatches: "unavailable" };
+            }
             return { handle: s.handle, keyMatches: data.pubkey === s.pubkey };
           } catch {
-            return { handle: s.handle, keyMatches: false };
+            return { handle: s.handle, keyMatches: "unavailable" };
           }
         }),
       );
       if (!live) return;
       const matchByHandle = new Map(resolved.map((r) => [r.handle, r.keyMatches]));
       setRows(
-        initial.map((r) => ({ ...r, keyMatches: matchByHandle.get(r.handle) ?? false })),
+        initial.map((r) => ({
+          ...r,
+          keyMatches: matchByHandle.get(r.handle) ?? "unavailable",
+        })),
       );
     })();
 
@@ -270,6 +294,8 @@ function PartyAttestation({ receipt }: { receipt: ReceiptPayload }) {
   const allSigned = total > 0 && signed === total;
   const allMatch =
     rows != null && rows.length > 0 && rows.every((r) => r.keyMatches === true);
+  const crossCheckUnavailable =
+    rows != null && rows.some((r) => r.keyMatches === "unavailable");
 
   return (
     <div className="border-t border-rule px-5 py-3.5">
@@ -284,7 +310,11 @@ function PartyAttestation({ receipt }: { receipt: ReceiptPayload }) {
           <>
             <span className="text-green">✓</span> Every named party signed this
             receipt with their own key, verified in your browser.
-            {allMatch ? " Each key matches the board's directory for its handle." : ""}
+            {allMatch
+              ? " Each key matches the board's directory for its handle."
+              : crossCheckUnavailable
+                ? " Sign in to also cross-check each key against the board's directory."
+                : ""}
           </>
         ) : (
           <>
@@ -295,7 +325,7 @@ function PartyAttestation({ receipt }: { receipt: ReceiptPayload }) {
         )}
       </p>
       <ul className="mt-2.5 divide-y divide-rule border-t border-rule">
-        {(rows ?? fields.signers.map((s) => ({ handle: s.handle, sigValid: false, keyMatches: null as boolean | null }))).map((r) => (
+        {(rows ?? fields.signers.map((s) => ({ handle: s.handle, sigValid: false, keyMatches: null as SignerRow["keyMatches"] }))).map((r) => (
           <li key={r.handle} className="flex items-center justify-between gap-4 py-1.5">
             <span className="font-mono text-[0.75rem] text-ink">@{r.handle}</span>
             <span className="flex items-center gap-3 font-mono text-[0.625rem] uppercase tracking-[0.1em]">
@@ -304,7 +334,7 @@ function PartyAttestation({ receipt }: { receipt: ReceiptPayload }) {
               </span>
               <span
                 className={
-                  r.keyMatches === null
+                  r.keyMatches === null || r.keyMatches === "unavailable"
                     ? "text-ink-faint"
                     : r.keyMatches
                       ? "text-green"
@@ -313,9 +343,11 @@ function PartyAttestation({ receipt }: { receipt: ReceiptPayload }) {
               >
                 {r.keyMatches === null
                   ? "key…"
-                  : r.keyMatches
-                    ? "key ok"
-                    : "key ?"}
+                  : r.keyMatches === "unavailable"
+                    ? "sign in"
+                    : r.keyMatches
+                      ? "key ok"
+                      : "key ?"}
               </span>
             </span>
           </li>

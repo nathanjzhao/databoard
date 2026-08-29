@@ -12,16 +12,23 @@
  * layer adds a signature from EACH confirmed participant, made with their own
  * Ed25519 key (user_signing_keys), over the canonical receipt bytes:
  *
- *   partySigningBase = canonicalJson({ v, dealId, tier, buyerToken,
- *                        amountBucket, attestedAt, seq, signers })
+ *   base   = canonicalJson({ v, dealId, tier, buyerToken, amountBucket,
+ *              buyerIsOther, schemaSha256, commit, attestedAt, seq,
+ *              participants, signers })
+ *   signed = domainSeparatedSigningBytes("databoard/receipt-attest/v1", base)
  *
- * where `signers` is the full roster of confirmed participants who hold a
- * registered signing key, each { handle, pubkey }, sorted by handle. Because
- * the base commits to the whole roster, a party's signature also fixes WHO
- * ELSE is on the receipt: drop or swap a signer and every remaining signature
- * stops verifying. `seq` is the receipt_minted transparency-log sequence, so a
- * signature is scoped to the exact receipt state (a tier change mints a new
- * leaf, a new seq, and asks the parties to re-sign).
+ * where `participants` is the FULL sorted roster of confirmed handles on the
+ * deal and `signers` is the subset of them that hold a registered signing key,
+ * each { handle, pubkey }, sorted by handle. The base commits EVERY field the
+ * receipt asserts, so a party's signature fixes the buyer-off-list bit, the
+ * schema/commit context, WHO ELSE is on the receipt (both the full roster and
+ * the signing subset), and WHICH receipt state: drop, swap, or flip any covered
+ * field and every remaining signature stops verifying (N-04). `seq` is the
+ * receipt_minted transparency-log sequence, so a signature is scoped to the
+ * exact receipt state (a tier change mints a new leaf, a new seq, and asks the
+ * parties to re-sign). The signed bytes carry a domain-separation frame so a
+ * receipt signature can never be lifted into the exchange or wire context
+ * (N-02), and verification is strict Ed25519 ({ zip215: false }).
  *
  * The residual, stated honestly on /transparency: the roster's pubkeys come
  * from an operator-served key directory (/api/signing/pubkey), so this is
@@ -36,11 +43,24 @@
  */
 
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { utf8ToBytes, canonicalJson } from "./merkle.ts";
-import { toB64url, fromB64url } from "./e2ee.ts";
+import { canonicalJson } from "./merkle.ts";
+import { toB64url, fromB64url, domainSeparatedSigningBytes } from "./e2ee.ts";
 
-/** Party-signature format version. Bump only on a breaking base-shape change. */
-export const PARTY_SIG_VERSION = 1 as const;
+/**
+ * Party-signature format version. Bump on a breaking base-shape change. v2:
+ * the base now covers EVERY receipt field the parties attest (buyerIsOther,
+ * schemaSha256, commit, and the FULL confirmed-participant roster, not only the
+ * subset holding a signing key), and the signed bytes are wrapped in a
+ * domain-separation frame (N-02, N-04). A v1 signature cannot verify as v2.
+ */
+export const PARTY_SIG_VERSION = 2 as const;
+
+/**
+ * Domain-separation tag for a receipt party attestation. Distinct from the
+ * exchange-event and wire-claim tags in lib/exchange.ts, so one identity key's
+ * signature over a receipt can never verify as an exchange or wire signature.
+ */
+const RECEIPT_ATTEST_DOMAIN = "databoard/receipt-attest/v1";
 
 const PUBKEY_B64_RE = /^[A-Za-z0-9_-]{43}$/; // 32-byte Ed25519 key, base64url
 const SIG_B64_RE = /^[A-Za-z0-9_-]{86}$/; // 64-byte Ed25519 signature, base64url
@@ -54,15 +74,24 @@ export type ReceiptPartySig = { handle: string; sig: string };
 /** The attestation block folded into a receipt: the roster and the sigs so far. */
 export type ReceiptAttestation = { signers: ReceiptSigner[]; sigs: ReceiptPartySig[] };
 
-/** The fields the party signing base is built from. */
+/** The fields the party signing base is built from: every field the receipt asserts. */
 export type PartyBaseFields = {
   dealId: string;
   tier: string;
   buyerToken: string;
   amountBucket: string;
+  /** Whether the buyer was typed off-list. Covered so the operator cannot flip it. */
+  buyerIsOther: boolean;
+  /** SHA-256 of the schema the platform ran at mint. Covered as signed context. */
+  schemaSha256: string;
+  /** Deploy commit at mint, or null. Covered as signed context. */
+  commit: string | null;
   attestedAt: number;
   /** The receipt_minted transparency-log sequence this receipt is bound to. */
   seq: number;
+  /** Every confirmed handle on the deal, sorted. The full roster, not just signers. */
+  participants: string[];
+  /** The subset of participants holding a registered signing key, sorted by handle. */
   signers: ReceiptSigner[];
 };
 
@@ -85,24 +114,39 @@ export function partySigningBase(f: PartyBaseFields): string {
     tier: f.tier,
     buyerToken: f.buyerToken,
     amountBucket: f.amountBucket,
+    buyerIsOther: f.buyerIsOther,
+    schemaSha256: f.schemaSha256,
+    commit: f.commit,
     attestedAt: f.attestedAt,
     seq: f.seq,
+    participants: [...f.participants].sort((a, b) => a.localeCompare(b)),
     signers: sortSigners(f.signers),
   });
 }
 
-/** Ed25519-sign the party base with a raw 32-byte seed. Returns a base64url signature. */
+/**
+ * Ed25519-sign the party base with a raw 32-byte seed. The signed bytes are the
+ * domain-separated frame over the canonical base, so this signature is scoped to
+ * the receipt-attestation context. Returns a base64url signature.
+ */
 export function signReceiptBase(base: string, secretKey: Uint8Array): string {
-  return toB64url(ed25519.sign(utf8ToBytes(base), secretKey));
+  const msg = domainSeparatedSigningBytes(RECEIPT_ATTEST_DOMAIN, base);
+  return toB64url(ed25519.sign(msg, secretKey));
 }
 
-/** Verify one party signature over the base against a base64url pubkey. Never throws. */
+/**
+ * Verify one party signature over the base against a base64url pubkey. Strict
+ * Ed25519 (RFC 8032 / { zip215: false }): a non-canonical signature, an
+ * out-of-range S, or a small-order key is refused, giving SBS non-repudiation.
+ * Never throws.
+ */
 export function verifyPartySig(base: string, pubkeyB64: string, sigB64: string): boolean {
   const pub = fromB64url(pubkeyB64);
   const sig = fromB64url(sigB64);
   if (!pub || pub.length !== 32 || !sig || sig.length !== 64) return false;
   try {
-    return ed25519.verify(sig, utf8ToBytes(base), pub);
+    const msg = domainSeparatedSigningBytes(RECEIPT_ATTEST_DOMAIN, base);
+    return ed25519.verify(sig, msg, pub, { zip215: false });
   } catch {
     return false;
   }

@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toB64url, fromB64url } from "@/lib/e2ee";
+import { fetchKdfSalt } from "@/components/messages/keystore";
 import {
   DEFAULT_CHUNK_SIZE,
   EXCHANGE_VERSION,
@@ -316,7 +317,11 @@ function UnlockKey({
     setBusy(true);
     setError(null);
     try {
-      const k = await deriveSigningKeys(viewer, password);
+      // Derive under this account's per-user KDF salt (F-01) so the signing key
+      // matches the one login registered; a legacy account with no salt falls
+      // back to the unsalted derivation.
+      const kdfSalt = await fetchKdfSalt(viewer);
+      const k = await deriveSigningKeys(viewer, password, kdfSalt);
       onKeys(k);
       setPassword("");
     } catch {
@@ -413,7 +418,7 @@ function CreateExchange({
       const nonceSalt = rand(16);
       setPhase("encrypting in your browser…");
       const encd = await encryptDataset(sessionId, dataBytes, dek, DEMO_CHUNK_SIZE);
-      const dekCommit = dekCommitHex(dealId, dekSalt, dek);
+      const dekCommit = dekCommitHex(dealId, encd.ciphertextRoot, dekSalt, dek);
       const leaf: ExchangeLeaf = {
         v: EXCHANGE_VERSION,
         sessionId,

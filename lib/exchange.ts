@@ -16,8 +16,11 @@
  *      AEAD-encrypts each chunk under a per-deal key (the DEK), and builds two
  *      Merkle manifests: one over the PLAINTEXT chunk hashes, one over the
  *      CIPHERTEXT chunk hashes. They commit plaintext_root, ciphertext_root,
- *      and dek_commit = SHA-256(domain || deal_id || salt || DEK) - a hash of
- *      the key, never the key. The seller SIGNS this commitment. The server
+ *      and dek_commit = SHA-256(domain || deal_id || ciphertext_root || salt ||
+ *      DEK) - a hash of the key, never the key. Binding the ciphertext_root INTO
+ *      the key commitment makes it key-committing over the exact ciphertext
+ *      (AES-GCM is not key-committing on its own): a committed ciphertext binds
+ *      to exactly one revealed key. The seller SIGNS this commitment. The server
  *      stores the commitment and the signature; it never sees the data or the
  *      DEK.
  *   2. DELIVER (seller, off-chain).  The encrypted chunks move to the buyer:
@@ -80,6 +83,7 @@ import {
   signingKeysFromSeed,
   toB64url,
   fromB64url,
+  domainSeparatedSigningBytes,
   type SigningKeys,
 } from "./e2ee.ts";
 
@@ -96,6 +100,17 @@ export type { SigningKeys };
 
 /** Event/leaf format version. Bump only on a breaking leaf-shape change. */
 export const EXCHANGE_VERSION = 1 as const;
+
+/**
+ * Ed25519 signature domain-separation tags (N-02). The one identity key signs
+ * three unrelated contexts: receipt attestations (lib/receipt-attest.ts, its own
+ * tag), exchange event leaves, and wire-claim leaves. A distinct tag is framed
+ * into the signed bytes of each here, so a signature made for an exchange event
+ * can never verify as a wire claim (or as a receipt), regardless of any future
+ * schema drift that made two leaf shapes collide.
+ */
+const EXCHANGE_EVENT_DOMAIN = "databoard/exchange-event/v1";
+const WIRE_CLAIM_DOMAIN = "databoard/wire-claim/v1";
 
 /** Domain separator for the DEK commitment. */
 const DEK_COMMIT_DOMAIN = "databoard-exchange-dek-v1";
@@ -320,10 +335,30 @@ export function generateDek(): Uint8Array {
   return randomBytes(32);
 }
 
-/** The DEK commitment: SHA-256(domain || dealId || salt || DEK), hex. */
-export function dekCommitHex(dealId: string, salt: Uint8Array, dek: Uint8Array): string {
+/**
+ * The DEK commitment: SHA-256(domain || dealId || ciphertextRoot || salt || DEK), hex.
+ * Binding the ciphertextRoot makes the commitment key-committing over the exact
+ * ciphertext, not the key alone: since AES-GCM is not key-committing, a single
+ * ciphertext could otherwise be opened under two keys to two valid plaintexts;
+ * pinning (ciphertextRoot, DEK) together means the committed ciphertext maps to
+ * exactly one revealed key. The commitment is carried in the seller's signed
+ * commit leaf and echoed in the signed dek_revealed leaf, so it is bound into
+ * the pay/reveal transcript.
+ */
+export function dekCommitHex(
+  dealId: string,
+  ciphertextRoot: string,
+  salt: Uint8Array,
+  dek: Uint8Array,
+): string {
   return bytesToHex(
-    sha256(concat(utf8ToBytes(DEK_COMMIT_DOMAIN + "\x1f" + dealId + "\x1f"), salt, dek)),
+    sha256(
+      concat(
+        utf8ToBytes(DEK_COMMIT_DOMAIN + "\x1f" + dealId + "\x1f" + ciphertextRoot + "\x1f"),
+        salt,
+        dek,
+      ),
+    ),
   );
 }
 
@@ -444,10 +479,16 @@ export type DecryptResult =
  * Buyer side: verify the DEK against dek_commit, decrypt every ciphertext
  * chunk, and check the plaintext against plaintext_root. Every failure mode is
  * a typed result, never a throw:
- *   bad_dek        the revealed key does not match the committed hash
+ *   bad_dek        the revealed key does not match the committed hash for the
+ *                  ciphertext actually held (the commitment binds ciphertextRoot)
  *   shape          the blob does not split into chunkCount pieces
  *   auth           a chunk failed AEAD authentication (wrong key or tampering)
  *   root_mismatch  the chunks decrypt but do not rebuild plaintext_root
+ *
+ * The dek_commit check recomputes the ciphertext root from the RECEIVED blob and
+ * folds it into the commitment, so a revealed key is accepted only for the exact
+ * ciphertext it was committed against: a substituted ciphertext (even one that
+ * would AEAD-decrypt under some other key) fails bad_dek before any decryption.
  */
 export async function decryptAndVerify(args: {
   sessionId: string;
@@ -460,7 +501,9 @@ export async function decryptAndVerify(args: {
   chunkCount: number;
   plaintextRoot: string;
 }): Promise<DecryptResult> {
-  if (dekCommitHex(args.dealId, args.dekSalt, args.dek) !== args.dekCommit) {
+  const cipherRoot = ciphertextRootOf(args.blob, args.chunkSize, args.chunkCount);
+  if (cipherRoot === null) return { ok: false, error: "shape" };
+  if (dekCommitHex(args.dealId, cipherRoot, args.dekSalt, args.dek) !== args.dekCommit) {
     return { ok: false, error: "bad_dek" };
   }
   const parts = splitCiphertext(args.blob, args.chunkSize, args.chunkCount);
@@ -539,7 +582,7 @@ export type SignableLeaf = {
   data: Record<string, unknown>;
 };
 
-/** The canonical bytes of a leaf: the exact bytes that are hashed and signed. */
+/** The canonical bytes of a leaf: the exact body that is hashed and framed for signing. */
 export function leafBytes(leaf: SignableLeaf): string {
   return canonicalJson(leaf);
 }
@@ -549,9 +592,32 @@ export function eventHash(leaf: SignableLeaf): string {
   return bytesToHex(sha256(utf8ToBytes(leafBytes(leaf))));
 }
 
-/** Sign a leaf with an Ed25519 secret seed. Returns a base64url signature over the canonical bytes. */
+/** The wire-claim leaf types, kept in one place so the signing-tag split is total. */
+const WIRE_CLAIM_TYPE_SET: ReadonlySet<string> = new Set<WireClaimType>([
+  "wire_credit_claim",
+  "wire_credit_countersign",
+  "wire_reversed",
+]);
+
+/**
+ * The signature domain tag for a leaf. Exchange events and wire claims share the
+ * SignableLeaf shape and this one signing helper, so the tag is chosen from the
+ * (disjoint) type vocabulary: a wire-claim type takes the wire tag, everything
+ * else the exchange-event tag. That is what keeps an exchange-event signature
+ * from ever verifying as a wire-claim signature (N-02).
+ */
+function leafSigningTag(leaf: SignableLeaf): string {
+  return WIRE_CLAIM_TYPE_SET.has(leaf.type) ? WIRE_CLAIM_DOMAIN : EXCHANGE_EVENT_DOMAIN;
+}
+
+/**
+ * Sign a leaf with an Ed25519 secret seed. The signed bytes are the
+ * domain-separated frame over the canonical leaf bytes, so the signature is
+ * scoped to this leaf's context. Returns a base64url signature.
+ */
 export function signLeaf(leaf: SignableLeaf, secretKey: Uint8Array): string {
-  return toB64url(ed25519.sign(utf8ToBytes(leafBytes(leaf)), secretKey));
+  const msg = domainSeparatedSigningBytes(leafSigningTag(leaf), leafBytes(leaf));
+  return toB64url(ed25519.sign(msg, secretKey));
 }
 
 /** True for a base64url Ed25519 public key (43 chars). */
@@ -559,7 +625,12 @@ export function isSigningPubkey(s: unknown): s is string {
   return typeof s === "string" && PUBKEY_B64_RE.test(s);
 }
 
-/** Verify a leaf's signature against a base64url Ed25519 public key. Never throws. */
+/**
+ * Verify a leaf's signature against a base64url Ed25519 public key. Strict
+ * Ed25519 (RFC 8032 / { zip215: false }): a malleable/non-canonical signature or
+ * a small-order key is refused, so a signed exchange step is non-repudiable and
+ * unambiguous. Never throws.
+ */
 export function verifyLeafSignature(
   leaf: SignableLeaf,
   signatureB64: string,
@@ -570,7 +641,8 @@ export function verifyLeafSignature(
     const sig = fromB64url(signatureB64);
     const pub = fromB64url(publicKeyB64);
     if (!sig || sig.length !== 64 || !pub || pub.length !== 32) return false;
-    return ed25519.verify(sig, utf8ToBytes(leafBytes(leaf)), pub);
+    const msg = domainSeparatedSigningBytes(leafSigningTag(leaf), leafBytes(leaf));
+    return ed25519.verify(sig, msg, pub, { zip215: false });
   } catch {
     return false;
   }
