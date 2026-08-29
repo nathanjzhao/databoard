@@ -39,6 +39,7 @@ import {
   oprfBuyerInput,
   outputToBuyerToken,
 } from "../../../lib/voprf.ts";
+import { KNOWN_BUYERS } from "../../../lib/buyers.ts";
 
 type VoprfState = { server: VOPRFServer; publicKeyHex: string };
 
@@ -168,4 +169,40 @@ export async function serverMintBuyerTokenV2(rawName: string): Promise<string> {
   const { server } = await getVoprf();
   const output = await server.evaluate(oprfBuyerInput(normalized));
   return outputToBuyerToken(output);
+}
+
+/** Per-process cache of the known-buyer token set; see knownBuyerTokenSet. */
+let knownBuyerTokensPromise: Promise<Set<string>> | null = null;
+
+/**
+ * The v2 buyer tokens for the PUBLIC known-buyer dictionary, computed
+ * server-side via the same OPRF the browser blinds against. RFC 9497 guarantees
+ * the blind path and this direct path produce the identical output for the same
+ * input, so a token a legitimate client minted for a listed buyer is in this
+ * set.
+ *
+ * Used to BIND on-list buyer tokens at ask/deal creation (N-03): a member who
+ * declares a KNOWN buyer (buyer_is_other = false) must submit the genuine OPRF
+ * output for one of these names, not an arbitrary "v2:"+128-hex string the OPRF
+ * never produced. It cannot vouch for OFF-list tokens, because the server never
+ * sees that name; those stay format-checked only, which the schema documents.
+ *
+ * This reveals nothing new: computing the known-buyer tokens over the small
+ * public list is the operator's already-documented capability. No buyer name is
+ * stored; only tokens are compared.
+ */
+export function knownBuyerTokenSet(): Promise<Set<string>> {
+  if (!knownBuyerTokensPromise) {
+    knownBuyerTokensPromise = (async () => {
+      const set = new Set<string>();
+      for (const name of KNOWN_BUYERS) {
+        set.add(await serverMintBuyerTokenV2(name));
+      }
+      return set;
+    })().catch((err) => {
+      knownBuyerTokensPromise = null;
+      throw err;
+    });
+  }
+  return knownBuyerTokensPromise;
 }

@@ -33,6 +33,7 @@ import { settlementStanding } from "@/lib/referrals";
 import { DbNotConfiguredError, getDb, now } from "@/lib/db";
 import { newId } from "@/lib/crypto";
 import { isBuyerTokenV2 } from "@/lib/voprf";
+import { knownBuyerTokenSet } from "@/app/api/voprf/server";
 import { appendLeafBestEffort } from "@/lib/translog";
 import { mandateProblem, normalizeMandateHash, type MandateInput } from "@/lib/mandates";
 import { isExclusivity } from "@/lib/terms";
@@ -151,6 +152,31 @@ export async function POST(request: Request) {
 
   const bad = problem(body);
   if (bad) return NextResponse.json({ error: bad }, { status: 400 });
+
+  // N-03: an on-list buyer token must be a GENUINE OPRF output for one of the
+  // public known buyers, not just a well-formed "v2:" string. The server can
+  // bind this without learning a name (it evaluates the public list itself). An
+  // off-list token (buyer_is_other) is accepted on format alone, because the
+  // server never sees that name; the schema documents that residual.
+  if (!body.buyerIsOther) {
+    try {
+      const known = await knownBuyerTokenSet();
+      if (!known.has(body.buyerTokenV2 ?? "")) {
+        return NextResponse.json(
+          {
+            error:
+              "That on-list buyer token is not a genuine token for a known buyer. Pick the buyer from the list, or mark it off-list.",
+          },
+          { status: 400 },
+        );
+      }
+    } catch (err) {
+      if (err instanceof DbNotConfiguredError) {
+        return NextResponse.json({ error: err.message }, { status: 503 });
+      }
+      throw err;
+    }
+  }
 
   // Already a token: the browser minted it under the published key and
   // verified the proof before sending. The name it encodes never existed on

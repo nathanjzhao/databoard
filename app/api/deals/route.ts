@@ -19,6 +19,7 @@ import { getSessionUser } from "@/lib/auth";
 import { settlementStanding } from "@/lib/referrals";
 import { DbNotConfiguredError } from "@/lib/db";
 import { isBuyerTokenV2 } from "@/lib/voprf";
+import { knownBuyerTokenSet } from "@/app/api/voprf/server";
 import {
   MAX_DEAL_PARTICIPANTS,
   createDeal,
@@ -105,6 +106,29 @@ export async function POST(request: Request) {
     );
   }
   const buyerIsOther = body.buyerIsOther;
+
+  // N-03: an on-list buyer token must be a real OPRF output for a known buyer,
+  // bound server-side without seeing a name (same rule as POST /api/asks). An
+  // off-list token stays format-checked only; the schema documents that.
+  if (!buyerIsOther) {
+    try {
+      const known = await knownBuyerTokenSet();
+      if (!known.has(token)) {
+        return NextResponse.json(
+          {
+            error:
+              "That on-list buyer token is not a genuine token for a known buyer. Pick the buyer from the list, or mark it off-list.",
+          },
+          { status: 400 },
+        );
+      }
+    } catch (err) {
+      if (err instanceof DbNotConfiguredError) {
+        return NextResponse.json({ error: err.message }, { status: 503 });
+      }
+      throw err;
+    }
+  }
 
   const rawParticipants = Array.isArray(body.participants) ? body.participants : [];
   const participants = rawParticipants.map((p) => ({
