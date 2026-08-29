@@ -8,6 +8,7 @@ name: deploy-prebuilt
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
   id-token: write        # Sigstore OIDC for the provenance attestation
