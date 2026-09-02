@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "witnessId": "76633355359b91e0acf78d7189deadfab9809892592941d0e3fce0b8dc0b9534",
+  "keyName": "databoard-witness-ci",
+  "logId": "6a6b323b12ea36eeb0f97fb09407435da075853d0e87aa2a7b32f187d36533fa",
+  "treeSize": 12,
+  "rootHash": "ae901c866e4d3bc02f0245d7f7934d385025ebc37a409fb46594952383cc795c",
+  "cosignedAt": 1788349417425,
+  "publicKey": "7b760f8d51bcbe6a52719baa01d6750b3f2e1b486b34bdbadcf5ece0f12a5f8f",
+  "signature": "f0687ed45296c8e5db30d01e40dd9a5e4c250ac8ca190c9680a265cfa85a73b738878a2440f4a836466089206cab2f50c4b042698efb95a22fb41a5fb4e99300"
+}
